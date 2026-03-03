@@ -4,13 +4,9 @@ This directory contains knowledge files for AI-assisted performance optimization
 
 ## Contents
 
-- This README — overview and index
-- Additional files will be added as optimization work progresses
-
-## Purpose
-
-These files provide context on:
-- Architecture and hot paths
-- Optimization targets and priorities
-- Benchmark baselines and results
-- Lessons learned from previous optimization attempts
+| File | Purpose |
+|------|---------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Module dependency graph, block processing pipeline, EVM execution flow, state/trie paths, key data structures |
+| [OPTIMIZATION-TARGETS.md](./OPTIMIZATION-TARGETS.md) | 17 code-verified optimization candidates, prioritized by impact/difficulty |
+| [BENCHMARK-INVENTORY.md](./BENCHMARK-INVENTORY.md) | Catalog of 80+ benchmark classes, coverage gaps, 11 recommended new benchmarks |
+| [AI-LOOP-DESIGN.md](./AI-LOOP-DESIGN.md) | The 6-phase optimization workflow: Research → Hypothesize → Implement → Benchmark → Measure → Decide |
