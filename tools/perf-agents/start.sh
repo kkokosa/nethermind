@@ -2,103 +2,180 @@
 set -euo pipefail
 
 # =============================================================================
-# start.sh — Launch the perf-ai agent system
+# start.sh — Launch the perf-ai agent system in a zellij session
+#
+# Creates a zellij session "perf-agents" with tabs:
+#   [server] [worker-1] [worker-2] ... [worker-N]
 #
 # Usage:
 #   ./tools/perf-agents/start.sh                    # 2 workers (default)
 #   ./tools/perf-agents/start.sh --workers 3        # 3 workers
-#   ./tools/perf-agents/start.sh --target EVM-1     # specific target
-#   ./tools/perf-agents/start.sh --dashboard-only   # just dashboard
+#   ./tools/perf-agents/start.sh --target EVM-1     # specific target (1 worker)
+#   ./tools/perf-agents/start.sh --server-only      # just dashboard server
+#   ./tools/perf-agents/start.sh --workers-only     # just workers, no server
+#
+# Attach later:  bash tools/perf-agents/attach.sh
+# Stop:          bash tools/perf-agents/stop.sh
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_DIR="$SCRIPT_DIR/run"
+SESSION_NAME="perf-agents"
 
-# Find a working Python (works on Windows Git Bash, WSL, and Linux)
-PYTHON=""
-for cmd in python python3 py; do
-    if command -v "$cmd" &>/dev/null && "$cmd" --version &>/dev/null; then
-        PYTHON="$cmd"
-        break
+# ── Validate dependencies ────────────────────────────────────────────────────
+
+check_cmd() {
+    if ! command -v "$1" &>/dev/null; then
+        echo "ERROR: '$1' not found. $2"
+        exit 1
     fi
-done
-if [ -z "$PYTHON" ]; then
-    echo "ERROR: No Python found. Install Python and add to PATH."
-    exit 1
-fi
+}
+
+check_cmd zellij "Install: cargo install zellij (or download from https://zellij.dev)"
+check_cmd python3 "Install Python 3 and ensure python3 is on PATH."
+check_cmd claude "Install Claude Code CLI."
+check_cmd sqlite3 "Install sqlite3."
+
+# ── Parse args ────────────────────────────────────────────────────────────────
 
 WORKERS=2
 TARGET=""
 EXCLUDE=""
-DASHBOARD_ONLY=false
 PORT=4040
+SERVER_ONLY=false
+WORKERS_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --workers)        WORKERS="$2"; shift 2 ;;
-        --target)         TARGET="$2"; shift 2 ;;
-        --exclude)        EXCLUDE="$2"; shift 2 ;;
-        --port)           PORT="$2"; shift 2 ;;
-        --dashboard-only) DASHBOARD_ONLY=true; shift ;;
+        --workers)       WORKERS="$2"; shift 2 ;;
+        --target)        TARGET="$2"; shift 2 ;;
+        --exclude)       EXCLUDE="$2"; shift 2 ;;
+        --port)          PORT="$2"; shift 2 ;;
+        --server-only)   SERVER_ONLY=true; shift ;;
+        --workers-only)  WORKERS_ONLY=true; shift ;;
         -h|--help)
-            echo "Usage: start.sh [--workers N] [--target ID] [--exclude IDs] [--port N] [--dashboard-only]"
+            echo "Usage: start.sh [--workers N] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only]"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
 done
 
-mkdir -p "$RUN_DIR" "$REPO_ROOT/.worktrees"
+if $SERVER_ONLY && $WORKERS_ONLY; then
+    echo "ERROR: --server-only and --workers-only are mutually exclusive."
+    exit 1
+fi
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  PERF-AI AGENT SYSTEM"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+# Force 1 worker when targeting a specific ID
+if [ -n "$TARGET" ]; then
+    WORKERS=1
+fi
 
-# ── Ensure .worktrees is gitignored ──
+# ── Create directories ────────────────────────────────────────────────────────
+
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/status" "$REPO_ROOT/.worktrees"
+
+# ── Ensure .worktrees is gitignored ──────────────────────────────────────────
+
 if ! grep -q "^\.worktrees/" "$REPO_ROOT/.gitignore" 2>/dev/null; then
     echo ".worktrees/" >> "$REPO_ROOT/.gitignore"
     echo "[init] Added .worktrees/ to .gitignore"
 fi
 
-# ── Initialize DB ──
+# ── Initialize DB ─────────────────────────────────────────────────────────────
+
 DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
 if [ ! -f "$DB_PATH" ]; then
     echo "[init] Creating database..."
-    "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
+    python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
 fi
 
-# ── Start decision server ──
-echo "[server] Starting on port $PORT..."
-"$PYTHON" "$SCRIPT_DIR/decision-server.py" --port "$PORT" &
-SERVER_PID=$!
-echo "$SERVER_PID" > "$RUN_DIR/server.pid"
-sleep 1
+# ── Kill existing session if any ──────────────────────────────────────────────
 
-if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "[server] FAILED"
-    exit 1
-fi
-echo "[server] http://localhost:$PORT (PID $SERVER_PID)"
-
-if $DASHBOARD_ONLY; then
-    echo ""
-    echo "Dashboard-only mode. Press Ctrl+C to stop."
-    wait "$SERVER_PID"
-    exit 0
+if zellij list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}"; then
+    echo "[init] Killing existing '$SESSION_NAME' session..."
+    zellij kill-session "$SESSION_NAME" 2>/dev/null || true
+    sleep 1
 fi
 
-# ── Spawn workers ──
-echo ""
-ORCH_ARGS="--workers $WORKERS"
-[ -n "$TARGET" ] && ORCH_ARGS="--target $TARGET"
-[ -n "$EXCLUDE" ] && ORCH_ARGS="$ORCH_ARGS --exclude $EXCLUDE"
+# ── Build worker args string for KDL ─────────────────────────────────────────
 
-"$PYTHON" "$SCRIPT_DIR/orchestrate.py" $ORCH_ARGS
+build_worker_args() {
+    local args=""
+    if [ -n "$TARGET" ]; then
+        args="        args \"--target\" \"$TARGET\"\n"
+    fi
+    if [ -n "$EXCLUDE" ]; then
+        args="${args}        args \"--exclude\" \"$EXCLUDE\"\n"
+    fi
+    echo -ne "$args"
+}
+
+# ── Generate KDL layout ──────────────────────────────────────────────────────
+
+LAYOUT_FILE="$RUN_DIR/perf-agents.kdl"
+
+{
+    echo 'layout {'
+
+    # Server tab
+    if ! $WORKERS_ONLY; then
+        cat <<SERVERTAB
+    tab name="server" focus=true {
+        pane command="python3" {
+            args "tools/perf-agents/decision-server.py" "--port" "$PORT"
+            cwd "$REPO_ROOT"
+        }
+    }
+SERVERTAB
+    fi
+
+    # Worker tabs
+    if ! $SERVER_ONLY; then
+        for i in $(seq 1 "$WORKERS"); do
+            FOCUS=""
+            if $WORKERS_ONLY && [ "$i" -eq 1 ]; then
+                FOCUS=" focus=true"
+            fi
+            echo "    tab name=\"worker-$i\"$FOCUS {"
+            echo '        pane command="bash" {'
+            # Build the args line: always start with the worker script path
+            ARGS_LINE="            args \"tools/perf-agents/worker.sh\""
+            if [ -n "$TARGET" ]; then
+                ARGS_LINE="$ARGS_LINE \"--target\" \"$TARGET\""
+            fi
+            if [ -n "$EXCLUDE" ]; then
+                ARGS_LINE="$ARGS_LINE \"--exclude\" \"$EXCLUDE\""
+            fi
+            echo "$ARGS_LINE"
+            echo "            cwd \"$REPO_ROOT\""
+            echo '        }'
+            echo '    }'
+        done
+    fi
+
+    echo '}'
+} > "$LAYOUT_FILE"
+
+# ── Launch ────────────────────────────────────────────────────────────────────
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  PERF-AI AGENT SYSTEM (zellij)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Session:    $SESSION_NAME"
+echo "  Workers:    $WORKERS"
+if [ -n "$TARGET" ]; then
+    echo "  Target:     $TARGET"
+fi
 echo "  Dashboard:  http://localhost:$PORT"
-echo "  Status:     $PYTHON $SCRIPT_DIR/orchestrate.py --status"
-echo "  Stop:       bash $SCRIPT_DIR/stop_all.sh"
-echo "  Logs:       $RUN_DIR/logs/"
+echo "  Layout:     $LAYOUT_FILE"
+echo ""
+echo "  Detach:     Ctrl+O, d"
+echo "  Reattach:   bash tools/perf-agents/attach.sh"
+echo "  Stop:       bash tools/perf-agents/stop.sh"
+echo "  Navigate:   Alt+<number> to switch tabs"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+exec zellij --session "$SESSION_NAME" --layout "$LAYOUT_FILE"

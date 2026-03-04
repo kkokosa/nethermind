@@ -65,14 +65,16 @@ dotnet-gcdump collect --process-id <PID>
 
 ## Agent System
 
-Autonomous optimization agents in `tools/perf-agents/`:
-- `start.sh --workers N` -- launch N workers + dashboard
-- `stop_all.sh` -- kill everything
+Autonomous optimization agents in `tools/perf-agents/` (runs in WSL2 + zellij):
+- `start.sh --workers N` -- launch zellij session with server + N worker tabs
+- `stop.sh` -- kill zellij session + cleanup
+- `attach.sh` -- reattach to running session
 - `orchestrate.py --status` -- check system state
 - Dashboard: http://localhost:4040 (when running)
 
-Each worker: claims a target -> creates git worktree -> researches ->
-implements -> benchmarks -> waits for human approval via dashboard.
+Each worker runs as a zellij tab: claims a target -> renames tab to W:<TARGET> ->
+creates git worktree -> researches -> implements -> benchmarks ->
+waits for human approval via dashboard.
 
 Key files:
 - `AGENT-SYSTEM.md` -- full architecture

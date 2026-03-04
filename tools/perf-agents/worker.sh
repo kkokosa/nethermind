@@ -26,16 +26,9 @@ RUN_DIR="$SCRIPT_DIR/run"
 WORKTREE_ROOT="$REPO_ROOT/.worktrees"
 BENCHMARK_LOCK="$RUN_DIR/benchmark.lock"
 
-# Find a working Python
-PYTHON=""
-for cmd in python python3 py; do
-    if command -v "$cmd" &>/dev/null && "$cmd" --version &>/dev/null; then
-        PYTHON="$cmd"
-        break
-    fi
-done
-if [ -z "$PYTHON" ]; then
-    echo "ERROR: No Python found. Install Python and add to PATH."
+PYTHON="python3"
+if ! command -v "$PYTHON" &>/dev/null; then
+    echo "ERROR: python3 not found. Install Python 3 and ensure python3 is on PATH."
     exit 1
 fi
 
@@ -151,6 +144,11 @@ DIFFICULTY=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load
 EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['impact'])")
 
 log "Claimed: $TARGET_ID → $LOOP_RUN_ID (branch: $BRANCH_NAME)"
+
+# Rename zellij tab to show target
+if [ -n "${ZELLIJ:-}" ]; then
+    zellij action rename-tab "W:${TARGET_ID}"
+fi
 
 # Export for prompt substitution
 export TARGET_ID LOOP_RUN_ID BRANCH_NAME DIFFICULTY EXPECTED_IMPACT

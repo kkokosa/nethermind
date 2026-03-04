@@ -1,11 +1,20 @@
-# Perf-AI Agent System (v2)
+# Perf-AI Agent System (v3 — zellij)
+
+## Changes from v2
+
+1. **Zellij multiplexer** — all processes run as tabs in one zellij session.
+   Attach/detach at will, watch Claude Code in real time, named tabs.
+2. **WSL2-native** — no more PowerShell scripts or Windows quirks.
+   Everything runs in `bash` under WSL2 with `python3` hardcoded.
+3. **Orchestrator simplified** — `orchestrate.py` no longer spawns processes.
+   It's now status-only + dry-run preview. Zellij owns process lifecycle.
+4. **Tab naming** — workers rename their tab to `W:<TARGET_ID>` after claim.
 
 ## Changes from v1
 
 1. **Dashboard pulls from API** — no JSON files on disk, no export script in the loop.
    Decision-server.py serves all data. Dashboard fetches via `useEffect` + polling.
-2. **Workers pick their own targets** — orchestrator spawns N identical workers,
-   each atomically claims the next-best target from SQLite.
+2. **Workers pick their own targets** — each atomically claims the next-best target from SQLite.
 3. **Git worktrees** — each worker gets its own filesystem via `git worktree add`.
    No working directory contention.
 4. **Decision flow is complete** — Approve triggers branch push + PR creation +
@@ -15,43 +24,50 @@
 
 ```
                               HUMAN
-                                │  http://localhost:4040
-                                ▼
-┌───────────────────────────────────────────────────────────┐
-│            decision-server.py (port 4040)                 │
-│                                                           │
-│  GET /                    → React dashboard (static)      │
-│  GET /api/loops           → all loop runs + comparisons   │
-│  GET /api/progress        → performance index time series │
-│  GET /api/benchmarks      → key benchmark trends          │
-│  GET /api/agents          → agent + area effectiveness    │
-│  GET /api/pending         → pending decisions (detailed)  │
-│  GET /api/workers         → live worker status            │
-│  POST /api/decision       → approve/discard               │
-│                                                           │
-│  All GET /api/* → query SQLite directly, return JSON      │
-│  POST /api/decision → update SQLite + trigger merge/PR    │
-└──────────────────┬────────────────────────────────────────┘
-                   │ reads/writes
-                   ▼
-            ┌─────────────┐
-            │   SQLite DB  │
-            └──────┬──────┘
-                   │ writes via existing scripts
-    ┌──────────────┼──────────────┐
-    ▼              ▼              ▼
-┌────────┐  ┌────────┐  ┌────────┐
-│Worker 1│  │Worker 2│  │Worker 3│
-│(claim) │  │(claim) │  │(claim) │
-│ EVM-1  │  │ TRIE-1 │  │ STATE-1│
-└────────┘  └────────┘  └────────┘
-    │              │              │
-    ▼              ▼              ▼
-┌────────┐  ┌────────┐  ┌────────┐
-│Worktree│  │Worktree│  │Worktree│
-│.wt/    │  │.wt/    │  │.wt/    │
-│ lr-001/│  │ lr-002/│  │ lr-003/│
-└────────┘  └────────┘  └────────┘
+                     http://localhost:4040  │  terminal
+                                ▼          ▼
+              ┌──────────────────────────────────────────────┐
+              │       zellij session "perf-agents"           │
+              │                                              │
+              │  Tab: [server]  [W:EVM-1]  [W:TRIE-1]  ...  │
+              │   ↕ attach/detach (Ctrl+O,d)                 │
+              │   ↕ navigate tabs (Alt+1..N)                 │
+              └──────────────────────────────────────────────┘
+                   │                │              │
+              ┌────┘                │              └────┐
+              ▼                     ▼                   ▼
+┌──────────────────────┐    ┌────────────┐     ┌────────────┐
+│decision-server.py    │    │ worker.sh  │     │ worker.sh  │
+│(port 4040)           │    │  (claim)   │     │  (claim)   │
+│                      │    │  EVM-1     │     │  TRIE-1    │
+│ GET /api/loops       │    └─────┬──────┘     └─────┬──────┘
+│ GET /api/workers     │          │                   │
+│ POST /api/decision   │          ▼                   ▼
+└──────────┬───────────┘    ┌────────────┐     ┌────────────┐
+           │ reads/writes   │ Worktree   │     │ Worktree   │
+           ▼                │ .wt/lr-001 │     │ .wt/lr-002 │
+    ┌─────────────┐         └────────────┘     └────────────┘
+    │   SQLite DB  │
+    └─────────────┘
+```
+
+### Key commands
+
+```bash
+# Start (interactive — opens zellij session)
+bash tools/perf-agents/start.sh --workers 2
+
+# Detach from session (keeps everything running)
+# Press: Ctrl+O, d
+
+# Reattach
+bash tools/perf-agents/attach.sh
+
+# Check status (without attaching)
+python3 tools/perf-agents/orchestrate.py --status
+
+# Stop everything
+bash tools/perf-agents/stop.sh
 ```
 
 ## Git Worktrees
@@ -325,24 +341,20 @@ git worktree list | grep '.worktrees/' | while read dir _ _; do
 done
 ```
 
-## Orchestrator (Simplified)
+## Orchestrator (Status-only)
 
-The orchestrator is now trivial — it just spawns N identical worker processes:
+The orchestrator no longer spawns processes — zellij owns the process lifecycle.
+It provides status checks and dry-run previews:
 
 ```bash
-# orchestrate.py --workers 3
-# Spawns 3 worker.sh processes. Each one:
-#   1. Claims a target (atomic SQLite)
-#   2. Creates worktree
-#   3. Runs research + implementation loop
-#   4. Waits for decision
-#   5. Cleans up
+# Show system status (zellij session, workers, recent loops)
+python3 orchestrate.py --status
 
-# orchestrate.py --workers 3 --exclude "EVM-1,TRIE-2"
-# Same, but workers skip these targets
+# Preview which targets would be claimed
+python3 orchestrate.py --dry-run --workers 3
 
-# orchestrate.py --target EVM-1
-# Spawns 1 worker forced to EVM-1 (skip claim protocol)
+# Preview with exclusions
+python3 orchestrate.py --dry-run --workers 3 --exclude "EVM-1,TRIE-2"
 ```
 
 ## Schema Changes
@@ -365,18 +377,19 @@ ALTER TABLE loop_runs ADD COLUMN worktree_path TEXT;
 
 ```
 tools/perf-agents/
-├── orchestrate.py              # Spawn N workers
+├── start.sh                    # Generate KDL layout, launch zellij session
+├── stop.sh                     # Kill zellij session, cleanup
+├── attach.sh                   # Reattach to session (or list sessions)
+├── stop-legacy.sh              # Non-zellij fallback (PID-based stop)
+├── orchestrate.py              # Status + dry-run preview (no longer spawns)
 ├── worker.sh                   # Generic worker (claims target, runs loop)
 ├── claim_target.py             # Atomic target claim from SQLite
 ├── decision-server.py          # HTTP server (dashboard + API + decision)
-├── start.sh                    # Launch everything
-├── stop_all.sh                 # Kill everything
 ├── PROMPTS/
 │   ├── research.md             # Phase 1-2 prompt
 │   └── implement.md            # Phase 3-5 prompt
 ├── run/                        # Runtime (gitignored)
-│   ├── server.pid
-│   ├── workers.pid
+│   ├── perf-agents.kdl         # Generated zellij layout
 │   ├── benchmark.lock
 │   ├── logs/*.log
 │   └── status/*.json
