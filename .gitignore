@@ -446,6 +446,9 @@ FodyWeavers.xsd
 # Worktrees
 .worktrees/
 
+# Perf dashboard SQLite database
+tools/perf-dashboard/db/
+
 ## Nethermind
 keystore/
 /.githooks

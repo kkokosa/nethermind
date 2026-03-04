@@ -1,0 +1,18 @@
+[
+  { "name": "BlockProcessing.Transfers_200", "data": [
+    { "date": "Jun 01", "ns": 4850 }, { "date": "Jun 05", "ns": 4720 }, { "date": "Jun 08", "ns": 4680 },
+    { "date": "Jun 14", "ns": 4320 }, { "date": "Jun 18", "ns": 4010 }, { "date": "Jun 20", "ns": 3890 }, { "date": "Jun 23", "ns": 3890 }
+  ]},
+  { "name": "EvmOpcodes.SSTORE", "data": [
+    { "date": "Jun 01", "ns": 1240 }, { "date": "Jun 05", "ns": 1240 }, { "date": "Jun 08", "ns": 1240 },
+    { "date": "Jun 14", "ns": 1082 }, { "date": "Jun 18", "ns": 1082 }, { "date": "Jun 20", "ns": 1082 }, { "date": "Jun 23", "ns": 1082 }
+  ]},
+  { "name": "EvmOpcodes.CALL", "data": [
+    { "date": "Jun 01", "ns": 890 }, { "date": "Jun 02", "ns": 720 }, { "date": "Jun 08", "ns": 720 },
+    { "date": "Jun 14", "ns": 720 }, { "date": "Jun 18", "ns": 720 }, { "date": "Jun 20", "ns": 720 }, { "date": "Jun 23", "ns": 720 }
+  ]},
+  { "name": "PatriciaTree.Commit_4096", "data": [
+    { "date": "Jun 01", "ns": 28500 }, { "date": "Jun 05", "ns": 28500 }, { "date": "Jun 08", "ns": 27600 },
+    { "date": "Jun 14", "ns": 27600 }, { "date": "Jun 18", "ns": 24100 }, { "date": "Jun 20", "ns": 24100 }, { "date": "Jun 23", "ns": 24100 }
+  ]}
+]

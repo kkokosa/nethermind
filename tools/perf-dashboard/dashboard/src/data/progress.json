@@ -1,0 +1,14 @@
+[
+  { "date": "Jun 01", "perfIndex": 100, "evmIndex": 100, "trieIndex": 100, "stateIndex": 100, "rlpIndex": 100, "noiseFloor": 2.1 },
+  { "date": "Jun 02", "perfIndex": 96.2, "evmIndex": 93.8, "trieIndex": 100, "stateIndex": 100, "rlpIndex": 100, "noiseFloor": 2.0, "event": "EVM-1 merged" },
+  { "date": "Jun 05", "perfIndex": 94.8, "evmIndex": 93.8, "trieIndex": 100, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.2, "event": "STATE-1 merged" },
+  { "date": "Jun 08", "perfIndex": 93.9, "evmIndex": 93.8, "trieIndex": 98.2, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 1.9, "event": "TRIE-5 merged" },
+  { "date": "Jun 10", "perfIndex": 93.9, "evmIndex": 93.8, "trieIndex": 98.2, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.3, "event": "DB-1 discarded" },
+  { "date": "Jun 12", "perfIndex": 93.9, "evmIndex": 93.8, "trieIndex": 98.2, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.1, "event": "RLP-1 regression" },
+  { "date": "Jun 14", "perfIndex": 91.1, "evmIndex": 87.4, "trieIndex": 98.2, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.0, "event": "EVM-2 merged" },
+  { "date": "Jun 16", "perfIndex": 91.1, "evmIndex": 87.4, "trieIndex": 98.2, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.4, "event": "TRIE-4 neutral" },
+  { "date": "Jun 18", "perfIndex": 88.4, "evmIndex": 87.4, "trieIndex": 90.1, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.1, "event": "TRIE-1 merged" },
+  { "date": "Jun 20", "perfIndex": 87.6, "evmIndex": 87.4, "trieIndex": 90.1, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.0, "event": "BP-1 merged" },
+  { "date": "Jun 22", "perfIndex": 87.6, "evmIndex": 87.4, "trieIndex": 90.1, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 2.2 },
+  { "date": "Jun 23", "perfIndex": 87.6, "evmIndex": 87.4, "trieIndex": 90.1, "stateIndex": 96.5, "rlpIndex": 100, "noiseFloor": 1.8 }
+]
