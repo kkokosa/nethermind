@@ -464,18 +464,18 @@ public ref struct EvmStack
         return _bytes.Slice(head * WordSize, WordSize);
     }
 
-    public Address? PopAddress() => Head-- == 0 ? null : new Address(_bytes.Slice(Head * WordSize + WordSize - AddressSize, AddressSize).ToArray());
-
-    public bool PopAddress(out Address address)
+    public Address? PopAddress()
     {
         if (Head-- == 0)
         {
-            address = null;
-            return false;
+            return null;
         }
 
-        address = new Address(_bytes.Slice(Head * WordSize + WordSize - AddressSize, AddressSize).ToArray());
-        return true;
+        // Use AddressCache to return a cached Address when the same 20-byte sequence
+        // is seen again. Addresses are highly repetitive within a block (e.g., WETH, USDC,
+        // Uniswap router appear in hundreds of CALLs), so cache hit rates of 80-95% are typical.
+        return AddressCache.GetOrAdd(
+            _bytes.Slice(Head * WordSize + WordSize - AddressSize, AddressSize));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
