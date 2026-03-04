@@ -176,6 +176,7 @@ public unsafe partial class VirtualMachine<TGasPolicy> where TGasPolicy : struct
                     returnState.Dispose();
                     vm.ReturnData = null!;
                 }
+                vm.ReturnDataMemory = default;
 
                 state.Reset(resetBlockChanges: true);
                 stack = new(0, txTracer, vmState.DataStack);

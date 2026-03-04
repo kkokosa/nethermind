@@ -12,6 +12,7 @@ using Nethermind.Evm.State;
 namespace Nethermind.Evm;
 
 using Int256;
+using static VirtualMachineStatics;
 
 internal static partial class EvmInstructions
 {
@@ -186,7 +187,10 @@ internal static partial class EvmInstructions
             goto OutOfGas;
         }
 
-        vm.ReturnData = returnData.ToArray();
+        // Zero-copy: pass the ReadOnlyMemory<byte> slice directly from pooled EVM
+        // memory instead of allocating a new byte[] via .ToArray().
+        vm.ReturnDataMemory = returnData;
+        vm.ReturnData = ReturnDataMemoryMarker;
 
         return EvmExceptionType.Revert;
     // Jump forward to be unpredicted by the branch predictor.

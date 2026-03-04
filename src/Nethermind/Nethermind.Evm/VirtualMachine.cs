@@ -54,6 +54,10 @@ public static class VirtualMachineStatics
     public static readonly UInt256 BigInt256 = 256;
     public static readonly UInt256 BigInt32 = 32;
 
+    // Sentinel object used by RETURN/REVERT to signal that ReturnDataMemory holds
+    // the return data, avoiding the heap allocation from .ToArray().
+    public static readonly object ReturnDataMemoryMarker = new object();
+
     public static readonly byte[] BytesZero = [0];
 
     public static readonly byte[] BytesZero32 =
@@ -100,6 +104,10 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
     protected VmState<TGasPolicy> _currentState;
     protected ReadOnlyMemory<byte>? _previousCallResult;
     protected UInt256 _previousCallOutputDestination;
+
+    // Stores the ReadOnlyMemory<byte> slice from EvmPooledMemory directly,
+    // bypassing the .ToArray() copy that would allocate a new byte[] per call frame.
+    public ReadOnlyMemory<byte> ReturnDataMemory;
 
     public ILogger Logger => _logger;
     public ICodeInfoRepository CodeInfoRepository => _codeInfoRepository;
@@ -1186,6 +1194,7 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
     {
         // Reset return data and set the current section index from the VM state.
         ReturnData = null;
+        ReturnDataMemory = default;
         SectionIndex = VmState.FunctionIndex;
 
         // Retrieve the code information and create a read-only span of instructions.
@@ -1303,19 +1312,28 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
         debugger?.TryWait(ref _currentState, ref programCounter, ref gas, ref stack.Head);
 #endif
         // Process the return data based on its runtime type.
-        if (ReturnData is byte[] data)
+        // Check for zero-copy ReadOnlyMemory<byte> path first (RETURN/REVERT set this
+        // to avoid the .ToArray() allocation).
+        if (ReferenceEquals(ReturnData, ReturnDataMemoryMarker))
         {
-            // Fall back to returning a CallResult with a byte array as the return data.
-            return new CallResult(null, data, null, codeInfo.Version);
+            return new CallResult(null, ReturnDataMemory, null, codeInfo.Version);
         }
         else if (ReturnData is VmState<TGasPolicy> state)
         {
             return new CallResult(state);
         }
+        else if (ReturnData is byte[] data)
+        {
+            return new CallResult(null, data, null, codeInfo.Version);
+        }
         return ReturnEof(codeInfo);
 
     Revert:
-        // Return a CallResult indicating a revert.
+        // Return a CallResult indicating a revert, using zero-copy path when available.
+        if (ReferenceEquals(ReturnData, ReturnDataMemoryMarker))
+        {
+            return new CallResult(null, ReturnDataMemory, null, codeInfo.Version, shouldRevert: true, exceptionType);
+        }
         return new CallResult(null, (byte[])ReturnData, null, codeInfo.Version, shouldRevert: true, exceptionType);
 
     OutOfGas:

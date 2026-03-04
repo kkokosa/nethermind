@@ -359,7 +359,11 @@ internal static partial class EvmInstructions
             goto OutOfGas;
         }
 
-        vm.ReturnData = returnData.ToArray();
+        // Zero-copy: pass the ReadOnlyMemory<byte> slice directly from pooled EVM
+        // memory instead of allocating a new byte[] via .ToArray(). The sentinel
+        // marker signals RunByteCode to read from ReturnDataMemory.
+        vm.ReturnDataMemory = returnData;
+        vm.ReturnData = ReturnDataMemoryMarker;
 
         return EvmExceptionType.None;
     // Jump forward to be unpredicted by the branch predictor.
