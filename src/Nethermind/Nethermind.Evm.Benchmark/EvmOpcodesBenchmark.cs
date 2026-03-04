@@ -880,7 +880,7 @@ public unsafe class EvmOpcodesBenchmark
     /// <summary>
     /// Subclass to access protected VirtualMachine members for benchmark setup.
     /// </summary>
-    private class BenchmarkVm(IBlockhashProvider bhp, ISpecProvider sp, ILogManager lm)
+    internal class BenchmarkVm(IBlockhashProvider bhp, ISpecProvider sp, ILogManager lm)
         : VirtualMachine<EthereumGasPolicy>(bhp, sp, lm)
     {
         private static readonly FieldInfo CodeInfoRepositoryField =
