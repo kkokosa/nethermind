@@ -62,3 +62,21 @@ dotnet-gcdump collect --process-id <PID>
 - Don't introduce unsafe code without benchmarked justification
 - Don't skip tests — correctness > performance
 - Don't merge upstream changes into perf branches without rebasing cleanly
+
+## Agent System
+
+Autonomous optimization agents in `tools/perf-agents/`:
+- `start.sh --workers N` -- launch N workers + dashboard
+- `stop_all.sh` -- kill everything
+- `orchestrate.py --status` -- check system state
+- Dashboard: http://localhost:4040 (when running)
+
+Each worker: claims a target -> creates git worktree -> researches ->
+implements -> benchmarks -> waits for human approval via dashboard.
+
+Key files:
+- `AGENT-SYSTEM.md` -- full architecture
+- `claim_target.py` -- atomic target claim from SQLite
+- `worker.sh` -- per-target loop (wraps Claude Code)
+- `decision-server.py` -- dashboard HTTP server + decision API
+- `PROMPTS/` -- Claude Code prompt templates
