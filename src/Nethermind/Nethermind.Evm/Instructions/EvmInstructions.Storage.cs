@@ -106,7 +106,12 @@ internal static partial class EvmInstructions
         Span<byte> bytes = stack.PopWord256();
 
         // Store either the actual value (if non-zero) or a predefined zero constant.
-        vm.WorldState.SetTransientState(in storageCell, !bytes.IsZero() ? bytes.ToArray() : BytesZero32);
+        // Non-zero values use the span overload which pools the byte[] internally,
+        // avoiding per-TSTORE GC allocations.
+        if (!bytes.IsZero())
+            vm.WorldState.SetTransientState(in storageCell, (ReadOnlySpan<byte>)bytes);
+        else
+            vm.WorldState.SetTransientState(in storageCell, BytesZero32);
 
         // If storage tracing is enabled, retrieve the current stored value and log the operation.
         if (vm.TxTracer.IsTracingStorage)
@@ -397,9 +402,14 @@ internal static partial class EvmInstructions
         }
 
         // Only update storage if the new value differs from the current value.
+        // Non-zero values use the span overload which pools the byte[] internally,
+        // avoiding per-SSTORE GC allocations.
         if (!newSameAsCurrent)
         {
-            vm.WorldState.Set(in storageCell, newIsZero ? BytesZero : bytes.ToArray());
+            if (newIsZero)
+                vm.WorldState.Set(in storageCell, BytesZero);
+            else
+                vm.WorldState.Set(in storageCell, bytes);
         }
 
         // Report storage changes for tracing if enabled.
@@ -559,9 +569,14 @@ internal static partial class EvmInstructions
         }
 
         // Only update storage if the new value differs from the current value.
+        // Non-zero values use the span overload which pools the byte[] internally,
+        // avoiding per-SSTORE GC allocations.
         if (!newSameAsCurrent)
         {
-            vm.WorldState.Set(in storageCell, newIsZero ? BytesZero : bytes.ToArray());
+            if (newIsZero)
+                vm.WorldState.Set(in storageCell, BytesZero);
+            else
+                vm.WorldState.Set(in storageCell, bytes);
         }
 
         // Report storage changes for tracing if enabled.

@@ -51,6 +51,13 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
     void Set(in StorageCell storageCell, byte[] newValue);
 
     /// <summary>
+    /// Set the provided value to persistent storage, using an internal pool to avoid allocation.
+    /// The span data is copied into a pooled buffer internally.
+    /// </summary>
+    void Set(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
+        => Set(in storageCell, newValue.ToArray());
+
+    /// <summary>
     /// Get the transient storage value at the specified storage cell
     /// </summary>
     /// <param name="storageCell">Storage location</param>
@@ -63,6 +70,13 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
     /// <param name="storageCell">Storage location</param>
     /// <param name="newValue">Value to store</param>
     void SetTransientState(in StorageCell storageCell, byte[] newValue);
+
+    /// <summary>
+    /// Set the provided value to transient storage, using an internal pool to avoid allocation.
+    /// The span data is copied into a pooled buffer internally.
+    /// </summary>
+    void SetTransientState(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
+        => SetTransientState(in storageCell, newValue.ToArray());
 
     /// <summary>
     /// Reset all storage

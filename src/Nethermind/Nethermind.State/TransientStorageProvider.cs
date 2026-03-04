@@ -23,5 +23,15 @@ namespace Nethermind.State
         /// <returns>Value at cell</returns>
         protected override ReadOnlySpan<byte> GetCurrentValue(in StorageCell storageCell) =>
             TryGetCachedValue(storageCell, out byte[]? bytes) ? bytes! : StorageTree.ZeroBytes;
+
+        /// <summary>
+        /// Transient storage values only live in _changes (no StorageChangeTrace),
+        /// so pooled arrays can be returned on any reset.
+        /// </summary>
+        public override void Reset(bool resetBlockChanges = true)
+        {
+            ReturnPooledValues();
+            base.Reset(resetBlockChanges);
+        }
     }
 }

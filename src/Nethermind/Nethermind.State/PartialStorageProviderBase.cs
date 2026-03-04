@@ -23,6 +23,9 @@ namespace Nethermind.State
         protected readonly List<Change> _changes = new(Resettable.StartCapacity);
         private readonly List<Change> _keptInCache = new();
 
+        // Tracks byte[] arrays rented from StorageValuePool, returned on reset
+        protected readonly List<byte[]> _pooledValues = new();
+
         // stack of snapshot indexes on changes for start of each transaction
         // this is needed for OriginalValues for new transactions
         protected readonly Stack<int> _transactionChangesSnapshots = new();
@@ -50,6 +53,31 @@ namespace Nethermind.State
         public void Set(in StorageCell storageCell, byte[] newValue)
         {
             PushUpdate(in storageCell, newValue);
+        }
+
+        /// <summary>
+        /// Set value from a span, renting a pooled buffer to avoid GC allocation.
+        /// The rented buffer is returned to the pool when the storage provider resets.
+        /// </summary>
+        public void SetPooled(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
+        {
+            byte[] buffer = StorageValuePool.RentAndCopy(newValue);
+            _pooledValues.Add(buffer);
+            PushUpdate(in storageCell, buffer);
+        }
+
+        /// <summary>
+        /// Return all pooled byte arrays to <see cref="StorageValuePool"/>.
+        /// Must be called only when no other references to these arrays exist.
+        /// </summary>
+        protected void ReturnPooledValues()
+        {
+            List<byte[]> pooled = _pooledValues;
+            for (int i = 0; i < pooled.Count; i++)
+            {
+                StorageValuePool.Return(pooled[i]);
+            }
+            pooled.Clear();
         }
 
         /// <summary>

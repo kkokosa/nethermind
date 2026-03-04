@@ -38,6 +38,7 @@ namespace Nethermind.Evm.Benchmark;
 /// Run: dotnet run -c Release --filter "*EvmOpcodesBenchmark*"
 /// </summary>
 [Config(typeof(EvmOpcodesBenchmarkConfig))]
+[MemoryDiagnoser]
 public unsafe class EvmOpcodesBenchmark
 {
     private const int InnerCount = 8192;

@@ -170,12 +170,21 @@ public class WitnessGeneratingWorldState(IWorldState inner, IStateReader stateRe
         inner.Set(in storageCell, newValue);
     }
 
+    public void Set(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
+    {
+        RecordSlot(storageCell);
+        inner.Set(in storageCell, newValue);
+    }
+
     // Transient state does not need trie node capture as it's purely in-memory storage, no trie representation whatsoever
     public ReadOnlySpan<byte> GetTransientState(in StorageCell storageCell)
         => inner.GetTransientState(in storageCell);
 
     // Transient state does not need trie node capture as it's purely in-memory storage, no trie representation whatsoever
     public void SetTransientState(in StorageCell storageCell, byte[] newValue)
+        => inner.SetTransientState(in storageCell, newValue);
+
+    public void SetTransientState(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
         => inner.SetTransientState(in storageCell, newValue);
 
     public void Reset(bool resetBlockChanges = true) => inner.Reset(resetBlockChanges);
