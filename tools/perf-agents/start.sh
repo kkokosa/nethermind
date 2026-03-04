@@ -51,12 +51,12 @@ fi
 DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
 if [ ! -f "$DB_PATH" ]; then
     echo "[init] Creating database..."
-    python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
+    python "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
 fi
 
 # ── Start decision server ──
 echo "[server] Starting on port $PORT..."
-python3 "$SCRIPT_DIR/decision-server.py" --port "$PORT" &
+python "$SCRIPT_DIR/decision-server.py" --port "$PORT" &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$RUN_DIR/server.pid"
 sleep 1
@@ -80,12 +80,12 @@ ORCH_ARGS="--workers $WORKERS"
 [ -n "$TARGET" ] && ORCH_ARGS="--target $TARGET"
 [ -n "$EXCLUDE" ] && ORCH_ARGS="$ORCH_ARGS --exclude $EXCLUDE"
 
-python3 "$SCRIPT_DIR/orchestrate.py" $ORCH_ARGS
+python "$SCRIPT_DIR/orchestrate.py" $ORCH_ARGS
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Dashboard:  http://localhost:$PORT"
-echo "  Status:     python3 $SCRIPT_DIR/orchestrate.py --status"
+echo "  Status:     python $SCRIPT_DIR/orchestrate.py --status"
 echo "  Stop:       bash $SCRIPT_DIR/stop_all.sh"
 echo "  Logs:       $RUN_DIR/logs/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

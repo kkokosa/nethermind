@@ -82,7 +82,7 @@ def show_status():
                 "SELECT id, target_id FROM loop_runs WHERE status='pending_decision'"
             ).fetchall()
             if pending:
-                print(f"\n  ★ PENDING DECISIONS ({len(pending)}):")
+                print(f"\n  * PENDING DECISIONS ({len(pending)}):")
                 for r in pending:
                     print(f"    {r['id']}  {r['target_id']}")
         finally:
@@ -143,7 +143,7 @@ def main():
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         with open(str(PID_FILE), "a") as f:
             f.write(f"{pid}\n")
-        print(f"Spawned worker for {args.target} — PID {pid}")
+        print(f"Spawned worker for {args.target} -- PID {pid}")
 
     else:
         # N generic workers, each claims its own target
@@ -154,7 +154,7 @@ def main():
             targets = parse_targets(TARGETS_FILE)
             print(f"\nAvailable targets ({len(targets)}):")
             for i, t in enumerate(targets):
-                marker = "→" if i < count else " "
+                marker = ">" if i < count else " "
                 print(f"  {marker} {t['target_id']:10s}  score={t['priority_score']:.0f}  "
                       f"difficulty={t['difficulty']}  impact={t['impact']}  {t['title'][:50]}")
             print(f"\nWould spawn {count} workers (each claims next best target)")
@@ -171,7 +171,7 @@ def main():
             pids.append(pid)
             with open(str(PID_FILE), "a") as f:
                 f.write(f"{pid}\n")
-            print(f"  Worker {i+1}/{count} — PID {pid}")
+            print(f"  Worker {i+1}/{count} -- PID {pid}")
 
         print(f"\n{count} workers spawned. Each will claim its own target.")
         print(f"  Logs:      {RUN_DIR / 'logs'}/")
