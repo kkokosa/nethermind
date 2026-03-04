@@ -15,6 +15,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_DIR="$SCRIPT_DIR/run"
 
+# Find a working Python (works on Windows Git Bash, WSL, and Linux)
+PYTHON=""
+for cmd in python python3 py; do
+    if command -v "$cmd" &>/dev/null && "$cmd" --version &>/dev/null; then
+        PYTHON="$cmd"
+        break
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: No Python found. Install Python and add to PATH."
+    exit 1
+fi
+
 WORKERS=2
 TARGET=""
 EXCLUDE=""
@@ -51,12 +64,12 @@ fi
 DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
 if [ ! -f "$DB_PATH" ]; then
     echo "[init] Creating database..."
-    python "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
+    "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
 fi
 
 # ── Start decision server ──
 echo "[server] Starting on port $PORT..."
-python "$SCRIPT_DIR/decision-server.py" --port "$PORT" &
+"$PYTHON" "$SCRIPT_DIR/decision-server.py" --port "$PORT" &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$RUN_DIR/server.pid"
 sleep 1
@@ -80,12 +93,12 @@ ORCH_ARGS="--workers $WORKERS"
 [ -n "$TARGET" ] && ORCH_ARGS="--target $TARGET"
 [ -n "$EXCLUDE" ] && ORCH_ARGS="$ORCH_ARGS --exclude $EXCLUDE"
 
-python "$SCRIPT_DIR/orchestrate.py" $ORCH_ARGS
+"$PYTHON" "$SCRIPT_DIR/orchestrate.py" $ORCH_ARGS
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Dashboard:  http://localhost:$PORT"
-echo "  Status:     python $SCRIPT_DIR/orchestrate.py --status"
+echo "  Status:     $PYTHON $SCRIPT_DIR/orchestrate.py --status"
 echo "  Stop:       bash $SCRIPT_DIR/stop_all.sh"
 echo "  Logs:       $RUN_DIR/logs/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

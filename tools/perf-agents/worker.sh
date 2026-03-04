@@ -26,6 +26,19 @@ RUN_DIR="$SCRIPT_DIR/run"
 WORKTREE_ROOT="$REPO_ROOT/.worktrees"
 BENCHMARK_LOCK="$RUN_DIR/benchmark.lock"
 
+# Find a working Python
+PYTHON=""
+for cmd in python python3 py; do
+    if command -v "$cmd" &>/dev/null && "$cmd" --version &>/dev/null; then
+        PYTHON="$cmd"
+        break
+    fi
+done
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: No Python found. Install Python and add to PATH."
+    exit 1
+fi
+
 MAX_ATTEMPTS=3
 MAX_TURNS=50
 DECISION_POLL_INTERVAL=30
@@ -119,7 +132,7 @@ run_claude() {
 log "Claiming target..."
 mkdir -p "$RUN_DIR/logs"
 
-CLAIM_JSON=$(python "$SCRIPT_DIR/claim_target.py" $CLAIM_ARGS --db "$DB_PATH")
+CLAIM_JSON=$("$PYTHON" "$SCRIPT_DIR/claim_target.py" $CLAIM_ARGS --db "$DB_PATH")
 CLAIM_EXIT=$?
 
 if [ $CLAIM_EXIT -eq 2 ]; then
@@ -131,11 +144,11 @@ elif [ $CLAIM_EXIT -ne 0 ]; then
 fi
 
 # Parse claim result
-LOOP_RUN_ID=$(echo "$CLAIM_JSON" | python -c "import sys,json; print(json.load(sys.stdin)['loop_run_id'])")
-TARGET_ID=$(echo "$CLAIM_JSON" | python -c "import sys,json; print(json.load(sys.stdin)['target_id'])")
-BRANCH_NAME=$(echo "$CLAIM_JSON" | python -c "import sys,json; print(json.load(sys.stdin)['branch'])")
-DIFFICULTY=$(echo "$CLAIM_JSON" | python -c "import sys,json; print(json.load(sys.stdin)['difficulty'])")
-EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | python -c "import sys,json; print(json.load(sys.stdin)['impact'])")
+LOOP_RUN_ID=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['loop_run_id'])")
+TARGET_ID=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['target_id'])")
+BRANCH_NAME=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['branch'])")
+DIFFICULTY=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['difficulty'])")
+EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['impact'])")
 
 log "Claimed: $TARGET_ID → $LOOP_RUN_ID (branch: $BRANCH_NAME)"
 
@@ -216,7 +229,7 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
             "SELECT COUNT(*) FROM benchmark_results WHERE loop_run_id='$LOOP_RUN_ID'" 2>/dev/null || echo "0")
         if [ "$RESULT_COUNT" != "0" ]; then
             log "Running compare.py manually..."
-            python "$REPO_ROOT/tools/perf-dashboard/scripts/compare.py" \
+            "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/compare.py" \
                 --loop-run "$LOOP_RUN_ID" --db "$DB_PATH" || true
         else
             log "No benchmark results produced"
@@ -244,7 +257,7 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     # Check: >= 5% improvement AND no regressions
     IMPROVED=0
     if [ -n "$BEST_DELTA" ] && [ "$REGRESSIONS" -eq 0 ]; then
-        IMPROVED=$(python -c "print(1 if float('${BEST_DELTA}') <= -5.0 else 0)" 2>/dev/null || echo 0)
+        IMPROVED=$("$PYTHON" -c "print(1 if float('${BEST_DELTA}') <= -5.0 else 0)" 2>/dev/null || echo 0)
     fi
 
     if [ "$IMPROVED" -eq 1 ]; then
@@ -274,7 +287,7 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
         cd "$REPO_ROOT"
     else
         log "All attempts exhausted."
-        python "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
+        "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
             --loop-run "$LOOP_RUN_ID" --verdict inconclusive \
             --notes "Exhausted $MAX_ATTEMPTS attempts. Best delta: ${BEST_DELTA:-none}" \
             --db "$DB_PATH" || true
@@ -312,7 +325,7 @@ while true; do
     ELAPSED=$(( $(date +%s) - WAIT_START ))
     if [ "$ELAPSED" -gt "$MAX_WAIT" ]; then
         log "Timeout (24h). Marking inconclusive."
-        python "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
+        "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
             --loop-run "$LOOP_RUN_ID" --verdict inconclusive \
             --notes "Timed out waiting for human review" --db "$DB_PATH" || true
         break
