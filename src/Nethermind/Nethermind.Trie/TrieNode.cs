@@ -1213,6 +1213,24 @@ namespace Nethermind.Trie
             return hasStorage;
         }
 
+        /// <summary>
+        /// Creates a SpanSource for an inline child node. If the parent's RLP is backed by a plain byte[],
+        /// returns a zero-copy slice referencing the parent's array. Otherwise falls back to copying.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static SpanSource CreateInlineChildSource(SpanSource parentRlp, int offset, int length)
+        {
+            // When parent _rlp is a plain byte[], create a slice to avoid allocating a new byte[]
+            if (parentRlp.TryGetArray(out byte[] backingArray))
+            {
+                return new SpanSource(backingArray, offset, length);
+            }
+
+            // Fallback: parent is CappedArray (pooled buffer) — must copy to avoid
+            // retaining the pooled buffer and preventing return to pool
+            return new SpanSource(parentRlp.Span.Slice(offset, length).ToArray());
+        }
+
         private void SeekChild(ref ValueRlpStream rlpStream, int index)
         {
             if (rlpStream.IsNull)
@@ -1280,8 +1298,8 @@ namespace Nethermind.Trie
                         default:
                             {
                                 rlpStream.Position--;
-                                ReadOnlySpan<byte> fullRlp = rlpStream.PeekNextItem();
-                                TrieNode child = new(NodeType.Unknown, fullRlp.ToArray());
+                                // Zero-copy: slice parent's backing array instead of copying
+                                TrieNode child = new(NodeType.Unknown, CreateInlineChildSource(rlp, rlpStream.Position, rlpStream.PeekNextItem().Length));
                                 data = childOrRef = child;
                                 break;
                             }
@@ -1348,8 +1366,10 @@ namespace Nethermind.Trie
                         }
                     default:
                         {
-                            ReadOnlySpan<byte> fullRlp = rlpStream.PeekNextItem();
-                            TrieNode child = new(NodeType.Unknown, fullRlp.ToArray());
+                            // Zero-copy: slice parent's backing array instead of copying
+                            int itemOffset = rlpStream.Position;
+                            int itemLength = rlpStream.PeekNextItem().Length;
+                            TrieNode child = new(NodeType.Unknown, CreateInlineChildSource(rlp, itemOffset, itemLength));
                             rlpStream.SkipItem();
                             chCount++;
                             output[i] = child;
@@ -1466,8 +1486,8 @@ namespace Nethermind.Trie
                             default:
                                 {
                                     _rlpStream.Position--;
-                                    ReadOnlySpan<byte> fullRlp = _rlpStream.PeekNextItem();
-                                    TrieNode child = new(NodeType.Unknown, fullRlp.ToArray());
+                                    // Zero-copy: slice parent's backing array instead of copying
+                                    TrieNode child = new(NodeType.Unknown, CreateInlineChildSource(rlp, _rlpStream.Position, _rlpStream.PeekNextItem().Length));
                                     data = childOrRef = child;
                                     break;
                                 }

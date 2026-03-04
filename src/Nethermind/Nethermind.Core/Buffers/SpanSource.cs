@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Nethermind.Core.Extensions;
 
@@ -35,6 +34,15 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
         _obj = new CappedArraySource(capped);
     }
 
+    /// <summary>
+    /// Creates a span source referencing a slice of an existing byte array, avoiding a copy.
+    /// Used for inline trie nodes that share the parent node's backing array.
+    /// </summary>
+    public SpanSource(byte[] array, int offset, int length)
+    {
+        _obj = new SlicedArraySource(array, offset, length);
+    }
+
     public static implicit operator SpanSource(byte[] bytes) => new(bytes);
 
     public int MemorySize
@@ -43,9 +51,9 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
         {
             const int objSize = MemorySizes.RefSize;
 
-            var obj = _obj;
+            object obj = _obj;
 
-            if (obj == null)
+            if (obj is null)
                 return objSize;
 
             if (obj is byte[] array)
@@ -55,7 +63,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
                     : objSize + MemorySizes.ArrayOverhead + array.Length;
             }
 
-            return obj is CappedArraySource capped ? objSize + capped.MemorySize : 0;
+            return obj is ISpanSource source ? objSize + source.MemorySize : 0;
         }
     }
 
@@ -63,12 +71,12 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
     {
         get
         {
-            var obj = _obj;
+            object obj = _obj;
             if (obj is byte[] array)
                 return array.Length;
 
             if (obj is null) return 0;
-            return Unsafe.As<CappedArraySource>(obj).Length;
+            return ((ISpanSource)obj).Length;
         }
     }
 
@@ -76,7 +84,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
     {
         get
         {
-            var obj = _obj;
+            object obj = _obj;
 
             if (obj is null)
                 return Span<byte>.Empty;
@@ -84,11 +92,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
             if (obj is byte[] array)
                 return array.AsSpan();
 
-            if (obj is CappedArraySource capped)
-                return capped.Span;
-
-            return Span<byte>.Empty;
-            //return Unsafe.As<CappedArraySource>(obj).Span;
+            return ((ISpanSource)obj).Span;
         }
     }
 
@@ -98,7 +102,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
     {
         get
         {
-            var obj = _obj;
+            object obj = _obj;
 
             if (obj is null)
                 return true;
@@ -106,7 +110,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
             if (obj is byte[] array)
                 return array.Length == 0;
 
-            return Unsafe.As<CappedArraySource>(obj).Length == 0;
+            return ((ISpanSource)obj).Length == 0;
         }
     }
 
@@ -120,13 +124,13 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
     {
         Span<byte> comparand = other.Span;
 
-        var obj = _obj;
+        object obj = _obj;
         if (obj is byte[] array)
         {
             return array.AsSpan().SequenceEqual(comparand);
         }
 
-        return Unsafe.As<CappedArraySource>(obj).SequenceEqual(comparand);
+        return ((ISpanSource)obj).Span.SequenceEqual(comparand);
     }
 
     /// <summary>
@@ -136,7 +140,7 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
     public byte[]? ToArray()
     {
         object? obj = _obj;
-        return obj is null ? null : obj as byte[] ?? Unsafe.As<CappedArraySource>(obj).Span.ToArray();
+        return obj is null ? null : obj as byte[] ?? ((ISpanSource)obj).Span.ToArray();
     }
 
     public bool TryGetCappedArray(out CappedArray<byte> cappedArray)
@@ -148,6 +152,23 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
         }
 
         cappedArray = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Tries to get the backing byte[] from this SpanSource.
+    /// Returns true if backed by a plain byte[] (not CappedArray or sliced).
+    /// Used to create zero-copy slices for inline trie nodes.
+    /// </summary>
+    public bool TryGetArray(out byte[] array)
+    {
+        if (_obj is byte[] backing)
+        {
+            array = backing;
+            return true;
+        }
+
+        array = null!;
         return false;
     }
 
@@ -170,9 +191,37 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
                                  Capped.UnderlyingLength;
     }
 
+    /// <summary>
+    /// References a slice of an existing byte[] without copying.
+    /// The shared array is kept alive by the GC reference — safe because
+    /// inline trie nodes are small (&lt;32 bytes) while parent arrays are ~200-500 bytes.
+    /// </summary>
+    private sealed class SlicedArraySource : ISpanSource
+    {
+        private readonly byte[] _array;
+        private readonly int _offset;
+        private readonly int _length;
+
+        public SlicedArraySource(byte[] array, int offset, int length)
+        {
+            _array = array;
+            _offset = offset;
+            _length = length;
+        }
+
+        public int Length => _length;
+
+        public Span<byte> Span => _array.AsSpan(_offset, _length);
+
+        // Only report object overhead — the array is shared with the parent node
+        public int MemorySize => MemorySizes.SmallObjectOverhead +
+                                 MemorySizes.RefSize +
+                                 sizeof(int) * 2;
+    }
+
     public override string ToString()
     {
-        var obj = _obj;
+        object obj = _obj;
         if (obj is null)
             return "null";
 
@@ -181,6 +230,6 @@ public readonly struct SpanSource : ISpanSource, IEquatable<SpanSource>
             return $"array: {array.ToHexString()}";
         }
 
-        return $"capped: {Unsafe.As<CappedArraySource>(obj).Span.ToHexString()}";
+        return $"source: {((ISpanSource)obj).Span.ToHexString()}";
     }
 }
