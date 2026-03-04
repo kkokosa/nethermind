@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 
 const DECISION_API = '/api/pending';
 const SUBMIT_API = '/api/decision';
-const STATUS_API = '/api/workers';
+const STATUS_API = '/api/status';
 const POLL_INTERVAL = 5000;
 
 // ── Styling constants (matches existing dashboard theme) ────────────────────
@@ -117,9 +117,8 @@ function MarkdownBlock({ content, label }) {
   );
 }
 
-function LiveWorkerBar({ workers, onShowLog }) {
-  const alive = (workers || []).filter(w => w.alive !== false);
-  if (alive.length === 0) return null;
+function LiveWorkerBar({ workers }) {
+  if (!workers || workers.length === 0) return null;
 
   return (
     <div style={{
@@ -128,12 +127,12 @@ function LiveWorkerBar({ workers, onShowLog }) {
       borderRadius: 6,
     }}>
       <div style={{ fontSize: '11px', color: colors.textDim, marginBottom: 6, fontFamily: mono }}>
-        LIVE AGENTS ({alive.length})
+        LIVE AGENTS ({workers.length})
       </div>
-      {alive.map((w, i) => (
+      {workers.map((w, i) => (
         <div key={i} style={{
           display: 'flex', alignItems: 'center', gap: 8,
-          padding: '4px 0', borderBottom: i < alive.length - 1 ? `1px solid ${colors.border}08` : 'none',
+          padding: '4px 0', borderBottom: i < workers.length - 1 ? `1px solid ${colors.border}08` : 'none',
         }}>
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
@@ -152,17 +151,6 @@ function LiveWorkerBar({ workers, onShowLog }) {
           <span style={{ color: colors.textDim, fontSize: '10px', fontFamily: mono }}>
             attempt {w.attempt}/{w.maxAttempts}
           </span>
-          {onShowLog && w.id && (
-            <span
-              onClick={() => onShowLog(w.id)}
-              style={{
-                color: colors.accent, fontSize: '10px', fontFamily: mono,
-                cursor: 'pointer', textDecoration: 'none',
-              }}
-            >
-              logs
-            </span>
-          )}
         </div>
       ))}
     </div>
@@ -346,7 +334,7 @@ function DecisionCard({ run, onDecision }) {
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
-export default function PendingDecisions({ onShowLog }) {
+export default function PendingDecisions() {
   const [pending, setPending] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [error, setError] = useState(null);
@@ -404,7 +392,7 @@ export default function PendingDecisions({ onShowLog }) {
   return (
     <div style={{ marginBottom: 24 }}>
       {/* Live worker status */}
-      <LiveWorkerBar workers={workers} onShowLog={onShowLog} />
+      <LiveWorkerBar workers={workers} />
 
       {/* Error state */}
       {error && (
@@ -427,7 +415,7 @@ export default function PendingDecisions({ onShowLog }) {
               fontSize: '11px', fontFamily: mono, fontWeight: 700,
               color: colors.amber, letterSpacing: '0.05em',
             }}>
-              {"\u2605"} PENDING DECISIONS
+              \u2605 PENDING DECISIONS
             </span>
             <span style={{
               fontSize: '11px', fontFamily: mono, padding: '2px 8px',

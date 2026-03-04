@@ -23,6 +23,7 @@ export const StatusBadge = ({ status }) => {
     merged: { color: C.green, bg: C.greenBg, label: "MERGED" },
     implementing: { color: C.blue, bg: C.blueBg, label: "IMPL" },
     benchmarking: { color: C.amber, bg: C.amberBg, label: "BENCH" },
+    pending_decision: { color: C.amber, bg: C.amberBg, label: "PENDING" },
     discarded: { color: C.textDim, bg: "rgba(107,114,128,0.1)", label: "DISCARD" },
     research: { color: C.purple, bg: "rgba(168,85,247,0.08)", label: "RESEARCH" },
   };

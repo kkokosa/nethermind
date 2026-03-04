@@ -2,62 +2,99 @@
 <#
 .SYNOPSIS
     Stop the perf-ai agent system
+
+.PARAMETER ServerOnly
+    Only stop the decision server, leave workers running
+
+.PARAMETER WorkersOnly
+    Only stop workers, leave the decision server running
+
+.EXAMPLE
+    .\tools\perf-agents\stop.ps1
+    .\tools\perf-agents\stop.ps1 -ServerOnly
+    .\tools\perf-agents\stop.ps1 -WorkersOnly
 #>
+
+param(
+    [switch]$ServerOnly,
+    [switch]$WorkersOnly
+)
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path "$ScriptDir\..\..").Path
 $RunDir = "$ScriptDir\run"
 
+$stopServer = -not $WorkersOnly
+$stopWorkers = -not $ServerOnly
+
 Write-Host "Stopping perf-ai agent system..."
 
 # Kill decision server
-$serverPidFile = "$RunDir\server.pid"
-if (Test-Path $serverPidFile) {
-    $pid = (Get-Content $serverPidFile).Trim()
-    try {
-        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-        if ($proc) {
-            Stop-Process -Id $pid -Force
-            Write-Host "  Stopped server (PID $pid)"
-        }
-    } catch {}
-    Remove-Item $serverPidFile -Force
+if ($stopServer) {
+    $serverPidFile = "$RunDir\server.pid"
+    if (Test-Path $serverPidFile) {
+        $procId = (Get-Content $serverPidFile).Trim()
+        try {
+            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($proc) {
+                Stop-Process -Id $procId -Force
+                Write-Host "  Stopped server (PID $procId)"
+            }
+        } catch {}
+        Remove-Item $serverPidFile -Force
+    }
 }
 
 # Kill workers
-$workerPidFile = "$RunDir\workers.pid"
-if (Test-Path $workerPidFile) {
-    foreach ($line in Get-Content $workerPidFile) {
-        $pid = $line.Trim()
-        if (-not $pid) { continue }
-        try {
-            $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-            if ($proc) {
-                # Kill entire process tree
-                Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-                Write-Host "  Stopped worker PID $pid"
-            }
-        } catch {}
+if ($stopWorkers) {
+    $workerPidFile = "$RunDir\workers.pid"
+    if (Test-Path $workerPidFile) {
+        foreach ($line in Get-Content $workerPidFile) {
+            $procId = $line.Trim()
+            if (-not $procId) { continue }
+            try {
+                $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+                if ($proc) {
+                    # Kill entire process tree
+                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                    Write-Host "  Stopped worker PID $procId"
+                }
+            } catch {}
+        }
+        Remove-Item $workerPidFile -Force
     }
-    Remove-Item $workerPidFile -Force
+
+    # Clean status files + lock
+    Remove-Item "$RunDir\status\*.json" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$RunDir\benchmark.lock" -Force -ErrorAction SilentlyContinue
 }
 
-# Clean status files + lock
-Remove-Item "$RunDir\status\*.json" -Force -ErrorAction SilentlyContinue
-Remove-Item "$RunDir\benchmark.lock" -Force -ErrorAction SilentlyContinue
-
-Write-Host "All agents stopped."
+if ($stopServer -and $stopWorkers) {
+    Write-Host "All agents stopped."
+} elseif ($stopServer) {
+    Write-Host "Server stopped. Workers still running."
+} else {
+    Write-Host "Workers stopped. Server still running."
+}
 Write-Host ""
 
-# Show orphaned worktrees
-$wtDir = "$RepoRoot\.worktrees"
-if (Test-Path $wtDir) {
-    $worktrees = Get-ChildItem $wtDir -Directory
-    if ($worktrees.Count -gt 0) {
-        Write-Host "Worktrees still present ($($worktrees.Count)):"
-        $worktrees | ForEach-Object { Write-Host "  $($_.Name)" }
-        Write-Host ""
-        Write-Host "To clean up:  git worktree list; git worktree prune"
-        Write-Host "Or remove all: Remove-Item .worktrees -Recurse -Force; git worktree prune"
+# Clean up worktrees when stopping workers
+if ($stopWorkers) {
+    $wtDir = "$RepoRoot\.worktrees"
+    if (Test-Path $wtDir) {
+        $worktrees = Get-ChildItem $wtDir -Directory
+        if ($worktrees.Count -gt 0) {
+            Write-Host "Cleaning up $($worktrees.Count) worktree(s)..."
+            foreach ($wt in $worktrees) {
+                try {
+                    & git -C $RepoRoot worktree remove $wt.FullName --force 2>$null
+                    Write-Host "  Removed $($wt.Name)"
+                } catch {
+                    Write-Host "  Failed to remove $($wt.Name), removing directory" -ForegroundColor Yellow
+                    Remove-Item $wt.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            & git -C $RepoRoot worktree prune 2>$null
+        }
     }
 }

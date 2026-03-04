@@ -35,7 +35,6 @@ DB_PATH = REPO_ROOT / "tools" / "perf-dashboard" / "db" / "perf.db"
 DASHBOARD_DIST = REPO_ROOT / "tools" / "perf-dashboard" / "dashboard" / "dist"
 DASHBOARD_DEV = REPO_ROOT / "tools" / "perf-dashboard" / "dashboard"
 STATUS_DIR = SCRIPT_DIR / "run" / "status"
-LOGS_DIR = SCRIPT_DIR / "run" / "logs"
 LOOP_STATE_ROOT = REPO_ROOT / "loop-state"
 WORKTREE_ROOT = REPO_ROOT / ".worktrees"
 
@@ -319,15 +318,6 @@ def api_pending() -> list[dict]:
 
 # ── API: /api/workers ────────────────────────────────────────────────────────
 
-def _pid_alive(pid: int) -> bool:
-    """Check if a process is running (cross-platform)."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
 def api_workers() -> list[dict]:
     """Live worker status from run/status/*.json files."""
     results = []
@@ -336,7 +326,7 @@ def api_workers() -> list[dict]:
             try:
                 data = json.loads(f.read_text())
                 pid = data.get("pid", 0)
-                data["alive"] = bool(pid and _pid_alive(pid))
+                data["alive"] = bool(pid and os.path.exists(f"/proc/{pid}"))
                 results.append(data)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -511,119 +501,6 @@ def _gh_available() -> bool:
         return False
 
 
-# ── API: /api/logs ──────────────────────────────────────────────────────────
-
-def _parse_jsonl_log(filepath: Path, max_events: int = 200) -> list[str]:
-    """Parse a Claude Code JSONL log into human-readable text lines."""
-    output = []
-    try:
-        with open(filepath, encoding="utf-8", errors="replace") as f:
-            for raw_line in f:
-                try:
-                    obj = json.loads(raw_line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-
-                etype = obj.get("type", "")
-                subtype = obj.get("subtype", "")
-
-                if etype == "system" and subtype == "init":
-                    model = obj.get("model", "?")
-                    output.append(f"--- session start (model: {model}) ---")
-
-                elif etype == "assistant":
-                    msg = obj.get("message", {})
-                    for block in msg.get("content", []):
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") == "text":
-                            text = block["text"].strip()
-                            if text:
-                                output.append(text)
-                        elif block.get("type") == "tool_use":
-                            name = block.get("name", "?")
-                            inp = block.get("input", {})
-                            summary = _summarize_tool(name, inp)
-                            output.append(f"[tool] {name}: {summary}")
-
-                elif etype == "result":
-                    cost = obj.get("cost_usd")
-                    duration = obj.get("duration_ms")
-                    parts = ["--- session end"]
-                    if cost is not None:
-                        parts.append(f"cost: ${cost:.2f}")
-                    if duration is not None:
-                        parts.append(f"duration: {duration/1000:.0f}s")
-                    output.append(" | ".join(parts) + " ---")
-
-                if len(output) >= max_events:
-                    break
-    except OSError:
-        pass
-    return output
-
-
-def _summarize_tool(name: str, inp: dict) -> str:
-    """One-line summary of a tool call."""
-    if name == "Read":
-        return inp.get("file_path", "?").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    if name == "Glob":
-        return inp.get("pattern", "?")
-    if name == "Grep":
-        pat = inp.get("pattern", "?")
-        path = inp.get("path", "")
-        if path:
-            path = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            return f'"{pat}" in {path}'
-        return f'"{pat}"'
-    if name == "Edit":
-        fp = inp.get("file_path", "?").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        return fp
-    if name == "Write":
-        fp = inp.get("file_path", "?").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        return fp
-    if name == "Bash":
-        cmd = inp.get("command", "?")
-        return cmd[:120]
-    if name == "Agent":
-        return inp.get("description", inp.get("prompt", "?"))[:80]
-    if name in ("TaskCreate", "TaskUpdate"):
-        return inp.get("subject", inp.get("taskId", "?"))[:60]
-    # Generic: show first string value
-    for v in inp.values():
-        if isinstance(v, str) and v.strip():
-            return v.strip()[:80]
-    return ""
-
-
-def api_logs(loop_run_id: str, lines: int = 200) -> dict:
-    """Return log file contents for a loop run, grouped by phase."""
-    if not loop_run_id or not LOGS_DIR.exists():
-        return {"id": loop_run_id, "phases": []}
-
-    phases = []
-    for log_file in sorted(LOGS_DIR.glob(f"{loop_run_id}-*.log")):
-        # Extract phase name: "LR-001-research.log" -> "research"
-        stem = log_file.stem  # "LR-001-research"
-        prefix = loop_run_id + "-"
-        phase_name = stem[len(prefix):] if stem.startswith(prefix) else stem
-
-        try:
-            stat = log_file.stat()
-            parsed = _parse_jsonl_log(log_file, lines)
-            phases.append({
-                "name": phase_name,
-                "file": log_file.name,
-                "lines": parsed,
-                "size": stat.st_size,
-                "modifiedAt": stat.st_mtime,
-            })
-        except OSError:
-            pass
-
-    return {"id": loop_run_id, "phases": phases}
-
-
 # ── HTTP Handler ─────────────────────────────────────────────────────────────
 
 # Route table: path → handler function
@@ -669,19 +546,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        # /api/logs needs query params, handle before route table
-        if path == "/api/logs":
-            params = urllib.parse.parse_qs(parsed.query)
-            loop_run_id = params.get("id", [""])[0]
-            lines = int(params.get("lines", ["200"])[0])
-            try:
-                self._send_json(api_logs(loop_run_id, lines))
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-            return
+        path = urllib.parse.urlparse(self.path).path
 
         # API routes
         handler = API_GET_ROUTES.get(path)
@@ -745,14 +610,13 @@ def main():
     print(f"  DB:       {DB_PATH}")
     print(f"  Workers:  {STATUS_DIR}")
     print()
-    print(f"  GET  /api/loops       -> loop runs")
-    print(f"  GET  /api/progress    -> perf index time series")
-    print(f"  GET  /api/benchmarks  -> benchmark trends")
-    print(f"  GET  /api/agents      -> agent effectiveness")
-    print(f"  GET  /api/pending     -> pending decisions")
-    print(f"  GET  /api/workers     -> live worker status")
-    print(f"  GET  /api/logs?id=X   -> agent log files")
-    print(f"  POST /api/decision    -> submit verdict")
+    print(f"  GET  /api/loops       → loop runs")
+    print(f"  GET  /api/progress    → perf index time series")
+    print(f"  GET  /api/benchmarks  → benchmark trends")
+    print(f"  GET  /api/agents      → agent effectiveness")
+    print(f"  GET  /api/pending     → pending decisions")
+    print(f"  GET  /api/workers     → live worker status")
+    print(f"  POST /api/decision    → submit verdict")
 
     try:
         server.serve_forever()

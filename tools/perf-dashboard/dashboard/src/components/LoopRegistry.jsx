@@ -1,6 +1,13 @@
 import { C, FONT, Card, SectionHeader, StatusBadge, VerdictBadge, AreaTag, Stat } from "./shared";
 
-export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelect, filterVerdict, setFilterVerdict, filterArea, setFilterArea }) {
+function stripHypothesisPrefix(h) {
+  if (!h) return "";
+  // Strip "Claimed by worker, research pending" prefix, keep parenthesized content
+  const match = h.match(/^Claimed by worker.*?\((.+)\)$/s);
+  return match ? match[1] : h;
+}
+
+export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelect, filterVerdict, setFilterVerdict, filterArea, setFilterArea, onShowLog }) {
   const detail = selectedRun ? loops.find(r => r.id === selectedRun) : null;
 
   return (
@@ -47,7 +54,7 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                {["Status", "ID", "Target", "Hypothesis", "\u0394 Mean", "\u0394 Alloc", "p-val", "Conf", "Agent", "Cost", "Date"].map(h => (
+                {["Status", "Run", "Hypothesis", "\u0394 Mean", "\u0394 Alloc", "p-val", "Conf", "Agent", "Cost", "Date"].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: C.textDim, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -67,9 +74,11 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
                   onMouseLeave={e => { if (selectedRun !== run.id) e.currentTarget.style.background = "transparent"; }}
                 >
                   <td style={{ padding: "7px 8px" }}><StatusBadge status={run.status} /></td>
-                  <td style={{ padding: "7px 8px", fontWeight: 600, color: C.accent, whiteSpace: "nowrap" }}>{run.targetId}</td>
-                  <td style={{ padding: "7px 8px", whiteSpace: "nowrap", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>{run.target}</td>
-                  <td style={{ padding: "7px 8px", color: C.textDim, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.hypothesis}</td>
+                  <td style={{ padding: "7px 8px", fontWeight: 600, color: C.accent, whiteSpace: "nowrap" }}>
+                    <div>{run.id}</div>
+                    <div style={{ fontSize: 9, color: C.textDim, fontWeight: 400 }}>{run.targetId}</div>
+                  </td>
+                  <td style={{ padding: "7px 8px", color: C.textDim, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stripHypothesisPrefix(run.hypothesis)}</td>
                   <td style={{ padding: "7px 8px" }}><VerdictBadge verdict={run.verdict} delta={run.deltaMean} /></td>
                   <td style={{ padding: "7px 8px" }}><VerdictBadge verdict={run.verdict} delta={run.deltaAlloc} /></td>
                   <td style={{ padding: "7px 8px", color: run.pValue !== null && run.pValue < 0.05 ? C.green : C.textDim, fontSize: 11 }}>
@@ -105,7 +114,7 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
                 <AreaTag area={detail.targetId} />
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textBright }}>{detail.target}</span>
               </div>
-              <div style={{ fontSize: 11, color: C.textDim, maxWidth: 700 }}>{detail.hypothesis}</div>
+              <div style={{ fontSize: 11, color: C.textDim, maxWidth: 700 }}>{stripHypothesisPrefix(detail.hypothesis)}</div>
             </div>
             <button onClick={() => onSelect(null)} style={{ background: "none", border: "none", color: C.textDim, cursor: "pointer", fontSize: 16, fontFamily: FONT }}>&#x2715;</button>
           </div>
@@ -123,7 +132,7 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
             <span style={{ color: C.border }}>|</span>
             <a href="#" style={{ color: C.accent, textDecoration: "none" }}>BDN Results (JSON) &rarr;</a>
             <span style={{ color: C.border }}>|</span>
-            <a href="#" style={{ color: C.accent, textDecoration: "none" }}>Agent Reasoning Log &rarr;</a>
+            <a onClick={(e) => { e.preventDefault(); onShowLog && onShowLog(detail.id); }} style={{ color: C.accent, textDecoration: "none", cursor: "pointer" }}>Agent Reasoning Log &rarr;</a>
           </div>
         </Card>
       )}

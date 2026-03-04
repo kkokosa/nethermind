@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# worker.sh v2 --Autonomous optimization loop for one target
+# worker.sh v2 — Autonomous optimization loop for one target
 #
 # Each worker:
 #   1. Claims a target atomically (or receives one via --target)
@@ -25,19 +25,6 @@ PROMPTS_DIR="$SCRIPT_DIR/PROMPTS"
 RUN_DIR="$SCRIPT_DIR/run"
 WORKTREE_ROOT="$REPO_ROOT/.worktrees"
 BENCHMARK_LOCK="$RUN_DIR/benchmark.lock"
-
-# Find a working Python
-PYTHON=""
-for cmd in python python3 py; do
-    if command -v "$cmd" &>/dev/null && "$cmd" --version &>/dev/null; then
-        PYTHON="$cmd"
-        break
-    fi
-done
-if [ -z "$PYTHON" ]; then
-    echo "ERROR: No Python found. Install Python and add to PATH."
-    exit 1
-fi
 
 MAX_ATTEMPTS=3
 MAX_TURNS=50
@@ -101,7 +88,7 @@ trap cleanup EXIT
 
 acquire_benchmark_lock() {
     while [ -f "$BENCHMARK_LOCK" ]; do
-        log "Benchmark lock held --waiting..."
+        log "Benchmark lock held — waiting..."
         sleep 10
     done
     echo "$LOOP_RUN_ID (PID $$)" > "$BENCHMARK_LOCK"
@@ -132,7 +119,7 @@ run_claude() {
 log "Claiming target..."
 mkdir -p "$RUN_DIR/logs"
 
-CLAIM_JSON=$("$PYTHON" "$SCRIPT_DIR/claim_target.py" $CLAIM_ARGS --db "$DB_PATH")
+CLAIM_JSON=$(python3 "$SCRIPT_DIR/claim_target.py" $CLAIM_ARGS --db "$DB_PATH")
 CLAIM_EXIT=$?
 
 if [ $CLAIM_EXIT -eq 2 ]; then
@@ -144,11 +131,11 @@ elif [ $CLAIM_EXIT -ne 0 ]; then
 fi
 
 # Parse claim result
-LOOP_RUN_ID=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['loop_run_id'])")
-TARGET_ID=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['target_id'])")
-BRANCH_NAME=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['branch'])")
-DIFFICULTY=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['difficulty'])")
-EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['impact'])")
+LOOP_RUN_ID=$(echo "$CLAIM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['loop_run_id'])")
+TARGET_ID=$(echo "$CLAIM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['target_id'])")
+BRANCH_NAME=$(echo "$CLAIM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['branch'])")
+DIFFICULTY=$(echo "$CLAIM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['difficulty'])")
+EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['impact'])")
 
 log "Claimed: $TARGET_ID → $LOOP_RUN_ID (branch: $BRANCH_NAME)"
 
@@ -206,7 +193,7 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     export PREV_ATTEMPT=$((CURRENT_ATTEMPT - 1))
 
     log "Phase 3-5: Attempt $CURRENT_ATTEMPT/$MAX_ATTEMPTS"
-    update_status "implementing" "" "Attempt $CURRENT_ATTEMPT --implementing..."
+    update_status "implementing" "" "Attempt $CURRENT_ATTEMPT — implementing..."
 
     # ── Benchmark lock: hold during entire implement session ──
     # Claude Code will run benchmarks as part of this session.
@@ -229,15 +216,15 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
             "SELECT COUNT(*) FROM benchmark_results WHERE loop_run_id='$LOOP_RUN_ID'" 2>/dev/null || echo "0")
         if [ "$RESULT_COUNT" != "0" ]; then
             log "Running compare.py manually..."
-            "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/compare.py" \
+            python3 "$REPO_ROOT/tools/perf-dashboard/scripts/compare.py" \
                 --loop-run "$LOOP_RUN_ID" --db "$DB_PATH" || true
         else
             log "No benchmark results produced"
             update_status "error" ", approach='Attempt $CURRENT_ATTEMPT: no benchmark results'" \
-                "Attempt $CURRENT_ATTEMPT failed --no benchmark results"
+                "Attempt $CURRENT_ATTEMPT failed — no benchmark results"
             # Commit what we have and try again
             cd "$WORKTREE_DIR"
-            git add -A && git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} --no results [${LOOP_RUN_ID}]" || true
+            git add -A && git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} — no results [${LOOP_RUN_ID}]" || true
             git push origin "$BRANCH_NAME" || true
             cd "$REPO_ROOT"
             continue
@@ -257,16 +244,16 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     # Check: >= 5% improvement AND no regressions
     IMPROVED=0
     if [ -n "$BEST_DELTA" ] && [ "$REGRESSIONS" -eq 0 ]; then
-        IMPROVED=$("$PYTHON" -c "print(1 if float('${BEST_DELTA}') <= -5.0 else 0)" 2>/dev/null || echo 0)
+        IMPROVED=$(python3 -c "print(1 if float('${BEST_DELTA}') <= -5.0 else 0)" 2>/dev/null || echo 0)
     fi
 
     if [ "$IMPROVED" -eq 1 ]; then
-        log "IMPROVEMENT: ${BEST_DELTA}% --requesting human decision"
+        log "IMPROVEMENT: ${BEST_DELTA}% — requesting human decision"
         update_status "pending_decision" "" "Waiting for human review (${BEST_DELTA}% improvement)"
 
         cd "$WORKTREE_DIR"
         git add -A
-        git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} --${BEST_DELTA}% improvement [${LOOP_RUN_ID}]" || true
+        git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} — ${BEST_DELTA}% improvement [${LOOP_RUN_ID}]" || true
         git push origin "$BRANCH_NAME"
         cd "$REPO_ROOT"
 
@@ -282,12 +269,12 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
 
         cd "$WORKTREE_DIR"
         git add -A
-        git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} --no improvement [${LOOP_RUN_ID}]" || true
+        git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} — no improvement [${LOOP_RUN_ID}]" || true
         git push origin "$BRANCH_NAME" || true
         cd "$REPO_ROOT"
     else
         log "All attempts exhausted."
-        "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
+        python3 "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
             --loop-run "$LOOP_RUN_ID" --verdict inconclusive \
             --notes "Exhausted $MAX_ATTEMPTS attempts. Best delta: ${BEST_DELTA:-none}" \
             --db "$DB_PATH" || true
@@ -325,7 +312,7 @@ while true; do
     ELAPSED=$(( $(date +%s) - WAIT_START ))
     if [ "$ELAPSED" -gt "$MAX_WAIT" ]; then
         log "Timeout (24h). Marking inconclusive."
-        "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
+        python3 "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
             --loop-run "$LOOP_RUN_ID" --verdict inconclusive \
             --notes "Timed out waiting for human review" --db "$DB_PATH" || true
         break

@@ -19,14 +19,18 @@
 .PARAMETER Port
     Dashboard port (default: 4040)
 
-.PARAMETER DashboardOnly
-    Only start the dashboard, no workers
+.PARAMETER ServerOnly
+    Only start the decision server (dashboard), no workers
+
+.PARAMETER WorkersOnly
+    Only start workers, skip the decision server
 
 .EXAMPLE
     .\tools\perf-agents\start.ps1
     .\tools\perf-agents\start.ps1 -Workers 3
     .\tools\perf-agents\start.ps1 -Target EVM-1
-    .\tools\perf-agents\start.ps1 -DashboardOnly
+    .\tools\perf-agents\start.ps1 -ServerOnly
+    .\tools\perf-agents\start.ps1 -WorkersOnly
 #>
 
 param(
@@ -34,7 +38,8 @@ param(
     [string]$Target = "",
     [string]$Exclude = "",
     [int]$Port = 4040,
-    [switch]$DashboardOnly
+    [switch]$ServerOnly,
+    [switch]$WorkersOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,7 +65,7 @@ if (-not $Python) {
 Write-Host "Using Python: $Python ($(& $Python --version 2>&1))" -ForegroundColor DarkGray
 
 # -- Find Git Bash (needed for worker.sh) --
-if (-not $DashboardOnly) {
+if (-not $ServerOnly) {
     if (-not (Test-Path $GitBash)) {
         # Try PATH
         $GitBash = (Get-Command bash -ErrorAction SilentlyContinue).Source
@@ -99,29 +104,29 @@ if (-not (Test-Path $DbPath)) {
 }
 
 # -- Start decision server --
-Write-Host "[server] Starting on port $Port..."
-$serverArgs = @("$ScriptDir\decision-server.py", "--port", $Port, "--host", "127.0.0.1")
-$serverProc = Start-Process -FilePath $Python -ArgumentList $serverArgs `
-    -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput "$RunDir\logs\server-stdout.log" `
-    -RedirectStandardError "$RunDir\logs\server-stderr.log"
+if (-not $WorkersOnly) {
+    Write-Host "[server] Starting on port $Port..."
+    $serverArgs = @("$ScriptDir\decision-server.py", "--port", $Port, "--host", "127.0.0.1")
+    $serverProc = Start-Process -FilePath $Python -ArgumentList $serverArgs `
+        -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput "$RunDir\logs\server-stdout.log" `
+        -RedirectStandardError "$RunDir\logs\server-stderr.log"
 
-Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 2
 
-if ($serverProc.HasExited) {
-    Write-Host "[server] FAILED to start. Check $RunDir\logs\server-stderr.log" -ForegroundColor Red
-    Get-Content "$RunDir\logs\server-stderr.log" -ErrorAction SilentlyContinue | Select-Object -Last 5
-    exit 1
+    if ($serverProc.HasExited) {
+        Write-Host "[server] FAILED to start. Check $RunDir\logs\server-stderr.log" -ForegroundColor Red
+        Get-Content "$RunDir\logs\server-stderr.log" -ErrorAction SilentlyContinue | Select-Object -Last 5
+        exit 1
+    }
+
+    $serverProc.Id | Out-File "$RunDir\server.pid" -Encoding ascii
+    Write-Host "[server] http://localhost:$Port (PID $($serverProc.Id))" -ForegroundColor Green
 }
 
-$serverProc.Id | Out-File "$RunDir\server.pid" -Encoding ascii
-Write-Host "[server] http://localhost:$Port (PID $($serverProc.Id))" -ForegroundColor Green
-
-if ($DashboardOnly) {
+if ($ServerOnly) {
     Write-Host ""
-    Write-Host "Dashboard-only mode. Press Ctrl+C to stop." -ForegroundColor Yellow
-    Write-Host "Server PID: $($serverProc.Id) -- kill with: Stop-Process -Id $($serverProc.Id)"
-    try { $serverProc.WaitForExit() } catch {}
+    Write-Host "Server running. Stop with: .\tools\perf-agents\stop.ps1 -ServerOnly" -ForegroundColor Yellow
     exit 0
 }
 

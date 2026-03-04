@@ -20,13 +20,11 @@ import AreaHitRate from "./components/AreaHitRate";
 import FailureAnalysis from "./components/FailureAnalysis";
 import TargetCoverage from "./components/TargetCoverage";
 import ActivityLog from "./components/ActivityLog";
-import LogViewer from "./components/LogViewer";
 
 export default function Dashboard() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [filterVerdict, setFilterVerdict] = useState("all");
   const [filterArea, setFilterArea] = useState("all");
-  const [logViewerId, setLogViewerId] = useState(null);
 
   // ── Data: live from API when server running, static fallback otherwise ──
   const LOOP_RUNS = useLiveData('/api/loops', FALLBACK_LOOPS);
@@ -82,30 +80,8 @@ export default function Dashboard() {
   return (
     <div style={{
       fontFamily: FONT, background: C.bg, color: C.text,
-      minHeight: "100vh", padding: "16px 20px", boxSizing: "border-box",
-      position: "relative",
+      minHeight: "100vh", padding: "16px 20px", boxSizing: "border-box"
     }}>
-      {/* ── OFFLINE OVERLAY ── */}
-      {!connected && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 9000,
-          background: "rgba(12, 14, 19, 0.75)", backdropFilter: "blur(4px)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <div style={{
-            background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8,
-            padding: "32px 48px", textAlign: "center", fontFamily: FONT,
-          }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: C.red, marginBottom: 8 }}>
-              Cannot reach decision server
-            </div>
-            <div style={{ fontSize: 12, color: C.textDim }}>
-              Start it with: <code style={{ color: C.accent }}>.\tools\perf-agents\start.ps1 -ServerOnly</code>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── HEADER ── */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -146,7 +122,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── PENDING DECISIONS + LIVE WORKERS (only when server connected) ── */}
-      <PendingDecisions onShowLog={setLogViewerId} />
+      <PendingDecisions />
 
       {/* ── TOP KPIs ── */}
       <div style={{
@@ -205,7 +181,6 @@ export default function Dashboard() {
             setFilterVerdict={setFilterVerdict}
             filterArea={filterArea}
             setFilterArea={setFilterArea}
-            onShowLog={setLogViewerId}
           />
           <BenchmarkTrends benchmarks={BENCHMARK_TRENDS} />
         </div>
@@ -217,11 +192,6 @@ export default function Dashboard() {
           <ActivityLog progress={PROGRESS_DATA} />
         </div>
       </div>
-
-      {/* ── LOG VIEWER MODAL ── */}
-      {logViewerId && (
-        <LogViewer loopRunId={logViewerId} onClose={() => setLogViewerId(null)} />
-      )}
 
       {/* ── FOOTER ── */}
       <div style={{
