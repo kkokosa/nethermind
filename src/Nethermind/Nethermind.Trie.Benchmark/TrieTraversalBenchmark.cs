@@ -5,7 +5,6 @@ using System;
 using BenchmarkDotNet.Attributes;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
-using Nethermind.Core.Test;
 using Nethermind.Db;
 using Nethermind.Logging;
 using Nethermind.Serialization.Rlp;
@@ -23,29 +22,20 @@ public class TrieTraversalBenchmark
 {
     private const int EntryCount = 1024;
 
-    private PatriciaTree _committedTree = null!;
     private Hash256[] _keys = null!;
     private MemDb _db = null!;
-    private TrieStore _trieStore = null!;
-    private ITrieNodeCache _trieNodeCache = null!;
+    private Hash256 _rootHash = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         _db = new MemDb();
-        _trieNodeCache = new TrieNodeCache(NullLogManager.Instance);
-        _trieStore = new TrieStore(
-            _trieNodeCache,
-            _db,
-            new DepthAndMemoryBased(128, 128.MB()),
-            No.Persistence,
-            NullLogManager.Instance);
 
         // Use small values (1-8 bytes) to force inline nodes in the trie.
         // When leaf RLP (path + value) < 32 bytes, the node is embedded inline
         // in the parent rather than stored by hash reference.
         PatriciaTree tree = new PatriciaTree(
-            _trieStore.GetTrieStore(null),
+            _db,
             Keccak.EmptyTreeHash,
             true,
             NullLogManager.Instance);
@@ -64,51 +54,26 @@ public class TrieTraversalBenchmark
 
         tree.Commit();
         tree.UpdateRootHash();
-
-        // Create a fresh tree from the committed state — forces node resolution from RLP
-        _committedTree = new PatriciaTree(
-            _trieStore.GetTrieStore(null),
-            tree.RootHash,
-            false,
-            NullLogManager.Instance);
+        _rootHash = tree.RootHash;
     }
 
     [GlobalCleanup]
     public void Cleanup()
     {
-        _trieStore.Dispose();
         _db.Dispose();
     }
 
     /// <summary>
-    /// Reads all entries from a committed trie. Each Get traverses ~7-8 nodes from
-    /// root to leaf. Inline nodes at lower levels trigger the allocation site under test.
-    /// </summary>
-    [Benchmark(OperationsPerInvoke = EntryCount)]
-    public int ReadAllEntries()
-    {
-        int found = 0;
-        for (int i = 0; i < EntryCount; i++)
-        {
-            ReadOnlySpan<byte> result = _committedTree.Get(_keys[i].Bytes);
-            if (!result.IsEmpty)
-                found++;
-        }
-
-        return found;
-    }
-
-    /// <summary>
-    /// Reads entries from a deserialized tree (cold cache) — every node must be resolved
-    /// from stored RLP, maximizing inline node resolution.
+    /// Reads entries from a cold tree — every node must be resolved from stored RLP,
+    /// maximizing inline node resolution allocations.
     /// </summary>
     [Benchmark(OperationsPerInvoke = EntryCount)]
     public int ReadWithDeserialization()
     {
         // Create a fresh tree each invocation to ensure cold node cache
         PatriciaTree coldTree = new PatriciaTree(
-            new RawScopedTrieStore(_db),
-            _committedTree.RootHash,
+            _db,
+            _rootHash,
             false,
             NullLogManager.Instance);
 
