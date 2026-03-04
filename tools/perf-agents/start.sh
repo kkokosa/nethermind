@@ -92,8 +92,9 @@ fi
 
 # ── Kill existing session if any ──────────────────────────────────────────────
 
-if zellij list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}"; then
-    echo "[init] Killing existing '$SESSION_NAME' session..."
+if zellij list-sessions 2>/dev/null | grep -q "${SESSION_NAME}"; then
+    echo "[init] Removing existing '$SESSION_NAME' session..."
+    zellij delete-session "$SESSION_NAME" 2>/dev/null || true
     zellij kill-session "$SESSION_NAME" 2>/dev/null || true
     sleep 1
 fi
@@ -117,11 +118,20 @@ LAYOUT_FILE="$RUN_DIR/perf-agents.kdl"
 
 {
     echo 'layout {'
+    echo '    tab_template name="ui" {'
+    echo '        pane size=1 borderless=true {'
+    echo '            plugin location="tab-bar"'
+    echo '        }'
+    echo '        children'
+    echo '        pane size=2 borderless=true {'
+    echo '            plugin location="status-bar"'
+    echo '        }'
+    echo '    }'
 
     # Server tab
     if ! $WORKERS_ONLY; then
         cat <<SERVERTAB
-    tab name="server" focus=true {
+    ui name="server" focus=true {
         pane command="python3" {
             args "tools/perf-agents/decision-server.py" "--port" "$PORT"
             cwd "$REPO_ROOT"
@@ -137,7 +147,7 @@ SERVERTAB
             if $WORKERS_ONLY && [ "$i" -eq 1 ]; then
                 FOCUS=" focus=true"
             fi
-            echo "    tab name=\"worker-$i\"$FOCUS {"
+            echo "    ui name=\"worker-$i\"$FOCUS {"
             echo '        pane command="bash" {'
             # Build the args line: always start with the worker script path
             ARGS_LINE="            args \"tools/perf-agents/worker.sh\""
@@ -178,4 +188,4 @@ echo "  Navigate:   Alt+<number> to switch tabs"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-exec zellij --session "$SESSION_NAME" --layout "$LAYOUT_FILE"
+exec zellij --layout "$LAYOUT_FILE" options --session-name "$SESSION_NAME"

@@ -35,8 +35,9 @@ echo "Stopping perf-ai agent system..."
 # ── Kill zellij session ───────────────────────────────────────────────────────
 
 if command -v zellij &>/dev/null; then
-    if zellij list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}"; then
-        zellij kill-session "$SESSION_NAME"
+    if zellij list-sessions 2>/dev/null | grep -q "${SESSION_NAME}"; then
+        zellij kill-session "$SESSION_NAME" 2>/dev/null || true
+        zellij delete-session "$SESSION_NAME" 2>/dev/null || true
         echo "  Killed zellij session '$SESSION_NAME'"
     else
         echo "  No active '$SESSION_NAME' session found"

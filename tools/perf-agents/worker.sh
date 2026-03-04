@@ -113,7 +113,7 @@ run_claude() {
     cd "$work_dir"
     envsubst < "$prompt_file" | claude -p \
         --dangerously-skip-permissions \
-        --output-format stream-json \
+        --output-format stream-text \
         --max-turns "$MAX_TURNS" \
         --verbose \
         2>&1 | tee -a "$log_file"

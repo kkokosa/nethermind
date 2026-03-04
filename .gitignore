@@ -455,3 +455,4 @@ keystore/
 
 # Worktrees
 .worktrees/
+tools/perf-dashboard/dashboard/dist/
