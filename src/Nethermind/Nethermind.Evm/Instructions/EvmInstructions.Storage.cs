@@ -106,8 +106,8 @@ internal static partial class EvmInstructions
         Span<byte> bytes = stack.PopWord256();
 
         // Store either the actual value (if non-zero) or a predefined zero constant.
-        // Non-zero values use the span overload which pools the byte[] internally,
-        // avoiding per-TSTORE GC allocations.
+        // Non-zero values use the span overload; allocation happens inside the
+        // storage provider rather than at the EVM call site.
         if (!bytes.IsZero())
             vm.WorldState.SetTransientState(in storageCell, (ReadOnlySpan<byte>)bytes);
         else
@@ -402,8 +402,8 @@ internal static partial class EvmInstructions
         }
 
         // Only update storage if the new value differs from the current value.
-        // Non-zero values use the span overload which pools the byte[] internally,
-        // avoiding per-SSTORE GC allocations.
+        // Non-zero values use the span overload; allocation happens inside the
+        // storage provider rather than at the EVM call site.
         if (!newSameAsCurrent)
         {
             if (newIsZero)
@@ -569,8 +569,8 @@ internal static partial class EvmInstructions
         }
 
         // Only update storage if the new value differs from the current value.
-        // Non-zero values use the span overload which pools the byte[] internally,
-        // avoiding per-SSTORE GC allocations.
+        // Non-zero values use the span overload; allocation happens inside the
+        // storage provider rather than at the EVM call site.
         if (!newSameAsCurrent)
         {
             if (newIsZero)

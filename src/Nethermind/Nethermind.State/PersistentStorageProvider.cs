@@ -66,9 +66,6 @@ internal sealed class PersistentStorageProvider : PartialStorageProviderBase
         {
             _storages.ResetAndClear();
             _toUpdateRoots.Clear();
-            // Safe to return pooled arrays here: StorageChangeTrace references in
-            // BlockChange have been cleared by _storages.ResetAndClear() above.
-            ReturnPooledValues();
         }
     }
 

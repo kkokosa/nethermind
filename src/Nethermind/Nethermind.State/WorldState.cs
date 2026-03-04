@@ -136,7 +136,7 @@ namespace Nethermind.State
         public void Set(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
         {
             DebugGuardInScope();
-            _persistentStorageProvider.SetPooled(storageCell, newValue);
+            _persistentStorageProvider.Set(storageCell, newValue.ToArray());
         }
         public ReadOnlySpan<byte> GetTransientState(in StorageCell storageCell)
         {
@@ -151,7 +151,7 @@ namespace Nethermind.State
         public void SetTransientState(in StorageCell storageCell, ReadOnlySpan<byte> newValue)
         {
             DebugGuardInScope();
-            _transientStorageProvider.SetPooled(storageCell, newValue);
+            _transientStorageProvider.Set(storageCell, newValue.ToArray());
         }
         public void Reset(bool resetBlockChanges = true)
         {
