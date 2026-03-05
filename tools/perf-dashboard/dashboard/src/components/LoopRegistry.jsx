@@ -1,7 +1,19 @@
+import { useState } from "react";
 import { C, FONT, Card, SectionHeader, StatusBadge, VerdictBadge, AreaTag, Stat } from "./shared";
+import LogModal from "./LogModal";
+
+// Extract actual hypothesis from "Claimed by worker, research pending (real hypothesis)" format
+function extractHypothesis(h) {
+  if (!h) return "";
+  const match = h.match(/\(([^)]+)\)$/);
+  if (match) return match[1];
+  // Fallback: remove common prefixes
+  return h.replace(/^Claimed by worker,?\s*(research pending)?\s*/i, "").trim() || h;
+}
 
 export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelect, filterVerdict, setFilterVerdict, filterArea, setFilterArea }) {
   const detail = selectedRun ? loops.find(r => r.id === selectedRun) : null;
+  const [showLogModal, setShowLogModal] = useState(null);
 
   return (
     <>
@@ -69,7 +81,7 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
                   <td style={{ padding: "7px 8px" }}><StatusBadge status={run.status} /></td>
                   <td style={{ padding: "7px 8px", fontWeight: 600, color: C.accent, whiteSpace: "nowrap" }}>{run.targetId}</td>
                   <td style={{ padding: "7px 8px", whiteSpace: "nowrap", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>{run.target}</td>
-                  <td style={{ padding: "7px 8px", color: C.textDim, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.hypothesis}</td>
+                  <td style={{ padding: "7px 8px", color: C.textDim, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extractHypothesis(run.hypothesis)}</td>
                   <td style={{ padding: "7px 8px" }}><VerdictBadge verdict={run.verdict} delta={run.deltaMean} /></td>
                   <td style={{ padding: "7px 8px" }}><VerdictBadge verdict={run.verdict} delta={run.deltaAlloc} /></td>
                   <td style={{ padding: "7px 8px", color: run.pValue !== null && run.pValue < 0.05 ? C.green : C.textDim, fontSize: 11 }}>
@@ -123,9 +135,24 @@ export default function LoopRegistry({ loops, filteredRuns, selectedRun, onSelec
             <span style={{ color: C.border }}>|</span>
             <a href="#" style={{ color: C.accent, textDecoration: "none" }}>BDN Results (JSON) &rarr;</a>
             <span style={{ color: C.border }}>|</span>
-            <a href="#" style={{ color: C.accent, textDecoration: "none" }}>Agent Reasoning Log &rarr;</a>
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); setShowLogModal(detail.id); }}
+              style={{ color: C.accent, textDecoration: "none" }}
+            >
+              Agent Reasoning Log &rarr;
+            </a>
           </div>
         </Card>
+      )}
+
+      {/* Log modal */}
+      {showLogModal && (
+        <LogModal
+          loopRunId={showLogModal}
+          onClose={() => setShowLogModal(null)}
+          isLive={false}
+        />
       )}
     </>
   );

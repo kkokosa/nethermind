@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS loop_runs (
     -- Status lifecycle: research → implementing → benchmarking → done/discarded
     status            TEXT NOT NULL DEFAULT 'research'
                       CHECK (status IN ('research','implementing','benchmarking',
+                                        'iterating','pending_decision',
                                         'done','discarded','error')),
 
     -- What
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS loop_runs (
 
     -- Git
     branch            TEXT,
+    worktree_path     TEXT,              -- path to git worktree for this run
     base_commit       TEXT,              -- baseline commit hash
     head_commit       TEXT,              -- candidate commit hash
     files_changed     TEXT,              -- JSON array of file paths

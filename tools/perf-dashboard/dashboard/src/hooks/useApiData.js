@@ -61,6 +61,7 @@ export function useApiData(endpoint, pollInterval = 5000) {
  *   const loops = useLiveData('/api/loops', FALLBACK);
  */
 export function useLiveData(endpoint, fallback, pollInterval = 5000) {
-  const { data, connected } = useApiData(endpoint, pollInterval);
+  const { data, connected, loading } = useApiData(endpoint, pollInterval);
+  if (loading) return null;
   return connected && data !== null ? data : fallback;
 }

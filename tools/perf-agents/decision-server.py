@@ -35,6 +35,7 @@ DB_PATH = REPO_ROOT / "tools" / "perf-dashboard" / "db" / "perf.db"
 DASHBOARD_DIST = REPO_ROOT / "tools" / "perf-dashboard" / "dashboard" / "dist"
 DASHBOARD_DEV = REPO_ROOT / "tools" / "perf-dashboard" / "dashboard"
 STATUS_DIR = SCRIPT_DIR / "run" / "status"
+LOGS_DIR = SCRIPT_DIR / "run" / "logs"
 LOOP_STATE_ROOT = REPO_ROOT / "loop-state"
 WORKTREE_ROOT = REPO_ROOT / ".worktrees"
 
@@ -513,6 +514,56 @@ def _gh_available() -> bool:
         return False
 
 
+# ── Logs API ──────────────────────────────────────────────────────────────────
+
+def api_logs(loop_run_id: str, tail: int = 0) -> dict:
+    """Get log content for a loop run. If tail > 0, return last N lines."""
+    if not LOGS_DIR.exists():
+        return {"error": "Logs directory not found", "content": ""}
+
+    # Find all log files for this run, sorted by modification time (newest first)
+    pattern = f"{loop_run_id}-*.log"
+    log_files = sorted(LOGS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not log_files:
+        return {"error": f"No logs found for {loop_run_id}", "content": "", "files": []}
+
+    # Return the most recent log file
+    latest = log_files[0]
+    try:
+        content = latest.read_text(encoding="utf-8", errors="replace")
+        if tail > 0:
+            lines = content.splitlines()
+            content = "\n".join(lines[-tail:])
+
+        return {
+            "loop_run_id": loop_run_id,
+            "file": latest.name,
+            "files": [f.name for f in log_files],
+            "content": content,
+            "size": latest.stat().st_size,
+            "mtime": latest.stat().st_mtime,
+        }
+    except Exception as e:
+        return {"error": str(e), "content": ""}
+
+
+def api_logs_for_worker(worker_id: str) -> dict:
+    """Get the current log file for a live worker based on status file."""
+    status_file = STATUS_DIR / f"{worker_id}.json"
+    if not status_file.exists():
+        return {"error": f"Worker {worker_id} not found", "content": ""}
+
+    try:
+        status = json.loads(status_file.read_text())
+        loop_run_id = status.get("id", "")
+        if loop_run_id:
+            return api_logs(loop_run_id, tail=200)
+        return {"error": "No loop_run_id in worker status", "content": ""}
+    except Exception as e:
+        return {"error": str(e), "content": ""}
+
+
 # ── HTTP Handler ─────────────────────────────────────────────────────────────
 
 # Route table: path → handler function
@@ -558,7 +609,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
 
         # API routes
         handler = API_GET_ROUTES.get(path)
@@ -568,6 +621,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
             return
+
+        # Dynamic route: /api/logs/<loop_run_id>
+        if path.startswith("/api/logs/"):
+            parts = path[len("/api/logs/"):].split("/")
+            loop_run_id = parts[0] if parts else ""
+            tail = int(query.get("tail", [0])[0])
+            if loop_run_id:
+                try:
+                    self._send_json(api_logs(loop_run_id, tail=tail))
+                except Exception as e:
+                    self._send_json({"error": str(e)}, 500)
+                return
 
         # Static files (dashboard)
         if path == "/":
@@ -628,6 +693,7 @@ def main():
     print(f"  GET  /api/agents      -> agent effectiveness")
     print(f"  GET  /api/pending     -> pending decisions")
     print(f"  GET  /api/workers     -> live worker status")
+    print(f"  GET  /api/logs/<id>   -> log content for loop run")
     print(f"  POST /api/decision    -> submit verdict")
 
     try:

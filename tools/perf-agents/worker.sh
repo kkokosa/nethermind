@@ -51,9 +51,47 @@ done
 
 LOOP_RUN_ID=""  # set after claim
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PHASE_STARTED_AT="$STARTED_AT"
+TOTAL_COST=0.00
+LAST_SESSION_COST=0.00
+# Timing history: {"research": {"duration_s": N, "cost": N}, "attempts": [{attempt, phases: {}, cost}]}
+TIMING_HISTORY='{"research":null,"attempts":[]}'
 
 log() {
     echo "[$(date -u +%H:%M:%S)] [${LOOP_RUN_ID:-INIT}] $*"
+}
+
+start_phase() {
+    # Record phase start time; close previous phase in timing history
+    local new_phase="$1"
+    local now
+    now=$(date +%s)
+    if [ -n "${CURRENT_PHASE:-}" ] && [ -n "${PHASE_START_EPOCH:-}" ]; then
+        local elapsed=$(( now - PHASE_START_EPOCH ))
+        TIMING_HISTORY=$("$PYTHON" -c "
+import json
+h = json.loads('''$TIMING_HISTORY''')
+phase = '$CURRENT_PHASE'
+attempt = ${CURRENT_ATTEMPT:-0}
+dur = $elapsed
+cost = $LAST_SESSION_COST
+
+if phase == 'research':
+    h['research'] = {'duration_s': dur, 'cost': round(cost, 4)}
+elif attempt > 0:
+    # Find or create attempt entry
+    while len(h['attempts']) < attempt:
+        h['attempts'].append({'attempt': len(h['attempts'])+1, 'phases': {}, 'cost': 0})
+    a = h['attempts'][attempt-1]
+    a['phases'][phase] = dur
+    a['cost'] = round(a['cost'] + cost, 4)
+print(json.dumps(h))
+")
+    fi
+    CURRENT_PHASE="$new_phase"
+    PHASE_START_EPOCH="$now"
+    PHASE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    LAST_SESSION_COST=0.00
 }
 
 update_status() {
@@ -61,12 +99,46 @@ update_status() {
     local extra="${2:-}"
     sqlite3 "$DB_PATH" \
         "UPDATE loop_runs SET status='$status', updated_at=datetime('now') $extra WHERE id='$LOOP_RUN_ID'"
+    start_phase "$status"
     write_live_status "$status" "${3:-$status}"
+}
+
+extract_cost_from_log() {
+    # Extract total_cost_usd from the last "result" event in a log file
+    local log_file="$1"
+    local cost
+    cost=$(grep '"type":"result"' "$log_file" 2>/dev/null \
+        | tail -1 \
+        | "$PYTHON" -c "import sys,json; print(json.loads(sys.stdin.readline()).get('total_cost_usd',0))" 2>/dev/null \
+        || echo "0")
+    echo "$cost"
+}
+
+accumulate_cost() {
+    # Add cost from a log file to running total and update DB
+    local log_file="$1"
+    local session_cost
+    session_cost=$(extract_cost_from_log "$log_file")
+    LAST_SESSION_COST="$session_cost"
+    TOTAL_COST=$("$PYTHON" -c "print(f'{$TOTAL_COST + $session_cost:.6f}')")
+    log "Session cost: \$$session_cost | Total: \$$TOTAL_COST"
+    sqlite3 "$DB_PATH" \
+        "UPDATE loop_runs SET cost_usd=$TOTAL_COST, updated_at=datetime('now') WHERE id='$LOOP_RUN_ID'" \
+        2>/dev/null || true
 }
 
 write_live_status() {
     local status="$1"
     local action="$2"
+    local now_epoch
+    now_epoch=$(date +%s)
+    local started_epoch
+    started_epoch=$(date -d "$STARTED_AT" +%s 2>/dev/null || date +%s)
+    local elapsed_total=$(( now_epoch - started_epoch ))
+    local phase_elapsed=0
+    if [ -n "${PHASE_START_EPOCH:-}" ]; then
+        phase_elapsed=$(( now_epoch - PHASE_START_EPOCH ))
+    fi
     mkdir -p "$RUN_DIR/status"
     cat > "$RUN_DIR/status/${LOOP_RUN_ID}.json" << EOF
 {
@@ -79,7 +151,12 @@ write_live_status() {
   "branch": "${BRANCH_NAME:-}",
   "worktree": "${WORKTREE_DIR:-}",
   "startedAt": "${STARTED_AT}",
+  "phaseStartedAt": "${PHASE_STARTED_AT}",
   "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "elapsedTotal": ${elapsed_total},
+  "phaseElapsed": ${phase_elapsed},
+  "costUsd": ${TOTAL_COST},
+  "timingHistory": ${TIMING_HISTORY},
   "pid": $$
 }
 EOF
@@ -109,22 +186,22 @@ run_claude() {
     local log_file="$2"
     local work_dir="${3:-$WORKTREE_DIR}"
 
-    # Substitute env vars in prompt, pipe to Claude Code
-    # Raw NDJSON goes to the log file (for dashboard), formatted output to terminal
     cd "$work_dir"
     # Write prompt to a temp file so we don't pipe into claude's stdin
-    # (piping causes node.js to block-buffer stdout, killing streaming).
     local prompt_tmp
     prompt_tmp=$(mktemp /tmp/perf-agent-prompt.XXXXXX)
     envsubst < "$prompt_file" > "$prompt_tmp"
 
-    # Use script(1) to wrap claude in a PTY so it streams unbuffered,
-    # then tee to the log file. script -q -c avoids extra headers.
-    script -q -f -c "claude -p \
-        --dangerously-skip-permissions \
-        --output-format text \
+    # Use stream-json for real-time output (--output-format text buffers everything)
+    # Pipeline: claude -> tee (raw NDJSON to log) -> stream-fmt.py (formatted to terminal)
+    # stdbuf -oL ensures line buffering through tee
+    # python3 -u ensures unbuffered output from formatter
+    stdbuf -oL claude -p \
+        --output-format stream-json \
         --max-turns $MAX_TURNS \
-        --verbose < '$prompt_tmp'" /dev/null 2>&1 | tee -a "$log_file"
+        --verbose < "$prompt_tmp" 2>&1 \
+        | stdbuf -oL tee -a "$log_file" \
+        | python3 -u "$SCRIPT_DIR/stream-fmt.py"
 
     rm -f "$prompt_tmp"
     cd "$REPO_ROOT"
@@ -181,6 +258,47 @@ sqlite3 "$DB_PATH" \
 # Create loop state dir inside worktree
 mkdir -p "$WORKTREE_DIR/$LOOP_STATE_DIR"
 
+# Create sandbox settings inside worktree (only affects Claude sessions here)
+mkdir -p "$WORKTREE_DIR/.claude"
+cat > "$WORKTREE_DIR/.claude/settings.json" << 'SANDBOX_EOF'
+{
+  "permissions": {
+    "allow": [
+      "Read", "Write", "Edit", "Glob", "Grep",
+      "Agent", "WebFetch", "WebSearch", "ToolSearch",
+      "TaskOutput", "TodoWrite",
+      "Bash(dotnet:*)", "Bash(git:*)", "Bash(sqlite3:*)",
+      "Bash(python3:*)", "Bash(ls:*)", "Bash(cat:*)",
+      "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
+      "Bash(find:*)", "Bash(grep:*)", "Bash(rg:*)",
+      "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
+      "Bash(diff:*)", "Bash(envsubst:*)", "Bash(chmod:*)"
+    ],
+    "deny": []
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "allowWrite": [".", "/tmp/perf-agents"],
+      "denyWrite": ["/etc", "/usr/bin", "/usr/local/bin"],
+      "denyRead": ["/home/*/.ssh", "/home/*/.aws", "/home/*/.gnupg", "/home/*/.claude"]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com", "api.github.com",
+        "nuget.org", "api.nuget.org",
+        "api.anthropic.com",
+        "docs.rs",
+        "doc.rust-lang.org"
+      ]
+    }
+  }
+}
+SANDBOX_EOF
+log "Sandbox settings written to $WORKTREE_DIR/.claude/settings.json"
+
 write_live_status "research" "Worktree created, starting research"
 
 # ─── Phase 1-2: Research + Hypothesize ───────────────────────────────────────
@@ -188,7 +306,9 @@ write_live_status "research" "Worktree created, starting research"
 log "Phase 1-2: Research + Hypothesize"
 update_status "research" "" "Running Claude Code for research..."
 
-run_claude "$PROMPTS_DIR/research.md" "$RUN_DIR/logs/${LOOP_RUN_ID}-research.log" "$WORKTREE_DIR"
+RESEARCH_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-research.log"
+run_claude "$PROMPTS_DIR/research.md" "$RESEARCH_LOG" "$WORKTREE_DIR"
+accumulate_cost "$RESEARCH_LOG"
 
 # Verify output
 if [ ! -f "$WORKTREE_DIR/$LOOP_STATE_DIR/hypothesis.md" ]; then
@@ -221,9 +341,9 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     # The lock ensures no other worker benchmarks simultaneously.
     acquire_benchmark_lock
 
-    run_claude "$PROMPTS_DIR/implement.md" \
-        "$RUN_DIR/logs/${LOOP_RUN_ID}-impl-${CURRENT_ATTEMPT}.log" \
-        "$WORKTREE_DIR"
+    IMPL_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-impl-${CURRENT_ATTEMPT}.log"
+    run_claude "$PROMPTS_DIR/implement.md" "$IMPL_LOG" "$WORKTREE_DIR"
+    accumulate_cost "$IMPL_LOG"
 
     release_benchmark_lock
 

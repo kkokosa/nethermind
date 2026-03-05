@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import LogModal from './LogModal';
 
 const DECISION_API = '/api/pending';
 const SUBMIT_API = '/api/decision';
@@ -117,7 +118,24 @@ function MarkdownBlock({ content, label }) {
   );
 }
 
-function LiveWorkerBar({ workers }) {
+function formatDuration(seconds) {
+  if (!seconds || seconds < 0) return '0s';
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return `${m}m${s > 0 ? ` ${s}s` : ''}`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h${rm > 0 ? ` ${rm}m` : ''}`;
+}
+
+function LiveWorkerBar({ workers, onShowLogs }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   if (!workers || workers.length === 0) return null;
 
   return (
@@ -129,30 +147,60 @@ function LiveWorkerBar({ workers }) {
       <div style={{ fontSize: '11px', color: colors.textDim, marginBottom: 6, fontFamily: mono }}>
         LIVE AGENTS ({workers.length})
       </div>
-      {workers.map((w, i) => (
-        <div key={i} style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '4px 0', borderBottom: i < workers.length - 1 ? `1px solid ${colors.border}08` : 'none',
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: colors.green, display: 'inline-block',
-            animation: 'pulse 2s infinite',
-          }} />
-          <span style={{ color: colors.accent, fontSize: '12px', fontFamily: mono, minWidth: 60 }}>
-            {w.id}
-          </span>
-          <span style={{ color: colors.text, fontSize: '12px', fontFamily: mono, minWidth: 60 }}>
-            {w.targetId}
-          </span>
-          <span style={{ color: colors.textDim, fontSize: '11px', fontFamily: mono, flex: 1 }}>
-            {w.currentAction || w.status}
-          </span>
-          <span style={{ color: colors.textDim, fontSize: '10px', fontFamily: mono }}>
-            attempt {w.attempt}/{w.maxAttempts}
-          </span>
-        </div>
-      ))}
+      {workers.map((w, i) => {
+        const elapsedTotal = w.elapsedTotal || 0;
+        const phaseElapsed = w.phaseElapsed || 0;
+        const cost = w.costUsd || 0;
+        // Estimate live elapsed from updatedAt + tick
+        const updatedAt = w.updatedAt ? new Date(w.updatedAt + 'Z').getTime() : 0;
+        const sinceUpdate = updatedAt ? Math.floor((Date.now() - updatedAt) / 1000) : 0;
+        const liveTotal = elapsedTotal + sinceUpdate;
+        const livePhase = phaseElapsed + sinceUpdate;
+
+        return (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '4px 0', borderBottom: i < workers.length - 1 ? `1px solid ${colors.border}08` : 'none',
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: colors.green, display: 'inline-block',
+              animation: 'pulse 2s infinite',
+            }} />
+            <span style={{ color: colors.accent, fontSize: '12px', fontFamily: mono, minWidth: 60 }}>
+              {w.id}
+            </span>
+            <span style={{ color: colors.text, fontSize: '12px', fontFamily: mono, minWidth: 60 }}>
+              {w.targetId}
+            </span>
+            <span style={{ color: colors.textDim, fontSize: '11px', fontFamily: mono, flex: 1 }}>
+              {w.currentAction || w.status}
+            </span>
+            <span style={{ color: colors.textDim, fontSize: '10px', fontFamily: mono, whiteSpace: 'nowrap' }}
+                  title={`Phase: ${formatDuration(livePhase)} | Total: ${formatDuration(liveTotal)}`}>
+              {formatDuration(livePhase)} / {formatDuration(liveTotal)}
+            </span>
+            {cost > 0 && (
+              <span style={{ color: colors.amber, fontSize: '10px', fontFamily: mono, whiteSpace: 'nowrap' }}>
+                ${cost.toFixed(2)}
+              </span>
+            )}
+            <span style={{ color: colors.textDim, fontSize: '10px', fontFamily: mono }}>
+              {w.attempt}/{w.maxAttempts}
+            </span>
+            <button
+              onClick={() => onShowLogs(w.id)}
+              style={{
+                background: 'none', border: `1px solid ${colors.border}`,
+                borderRadius: 3, padding: '2px 8px', cursor: 'pointer',
+                color: colors.accent, fontSize: '10px', fontFamily: mono,
+              }}
+            >
+              Logs
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -338,6 +386,7 @@ export default function PendingDecisions() {
   const [pending, setPending] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [error, setError] = useState(null);
+  const [showLogModal, setShowLogModal] = useState(null); // loop_run_id to show
 
   const fetchData = useCallback(async () => {
     try {
@@ -392,7 +441,16 @@ export default function PendingDecisions() {
   return (
     <div style={{ marginBottom: 24 }}>
       {/* Live worker status */}
-      <LiveWorkerBar workers={workers} />
+      <LiveWorkerBar workers={workers} onShowLogs={setShowLogModal} />
+
+      {/* Log modal */}
+      {showLogModal && (
+        <LogModal
+          loopRunId={showLogModal}
+          onClose={() => setShowLogModal(null)}
+          isLive={true}
+        />
+      )}
 
       {/* Error state */}
       {error && (

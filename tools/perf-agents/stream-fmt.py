@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-stream-fmt.py — Format Claude stream-json into readable terminal output.
+stream-fmt.py — Format Claude Code stream-json into readable terminal output.
 
 Reads NDJSON from stdin (claude --output-format stream-json), prints:
-  - Assistant text as-is (streaming)
+  - Assistant text as-is
   - Tool use: name + key input fields
   - Tool results: truncated summary
-  - Turn boundaries with token counts
 
-Raw NDJSON is preserved in the log file by tee in worker.sh.
-This script only formats what goes to the terminal.
+Claude Code stream-json format (different from raw Anthropic API):
+  {"type": "system", "subtype": "init", ...}
+  {"type": "assistant", "message": {"content": [...]}, ...}
+  {"type": "tool_use", "tool": "Bash", "input": {...}, ...}
+  {"type": "tool_result", "content": "...", ...}
+  {"type": "result", "result": "...", ...}
 
 Usage:
     claude -p ... --output-format stream-json | tee log.jsonl | python3 stream-fmt.py
@@ -17,6 +20,12 @@ Usage:
 
 import json
 import sys
+import os
+from datetime import datetime
+
+# Force unbuffered I/O
+sys.stdin = os.fdopen(sys.stdin.fileno(), 'r', buffering=1)
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
 # ANSI colors
 DIM = "\033[2m"
@@ -27,113 +36,112 @@ RED = "\033[31m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-# State tracking
-current_block_type = None
-current_tool_name = None
-tool_input_json = ""
-in_text_block = False
+
+def ts() -> str:
+    """Current timestamp for log prefix."""
+    return datetime.now().strftime("%H:%M:%S")
 
 
 def truncate(s: str, max_len: int = 200) -> str:
-    s = s.strip()
+    if s is None:
+        return ""
+    s = str(s).strip()
     if len(s) <= max_len:
         return s
     return s[:max_len] + "..."
 
 
-def format_tool_input(name: str, raw_json: str) -> str:
+def format_tool_input(name: str, inp: dict) -> str:
     """Extract key fields from tool input for display."""
-    try:
-        inp = json.loads(raw_json)
-    except (json.JSONDecodeError, ValueError):
-        return truncate(raw_json)
+    if not isinstance(inp, dict):
+        return truncate(str(inp))
 
     if name == "Read":
-        return inp.get("file_path", raw_json)
+        return inp.get("file_path", str(inp))
     if name == "Write":
         path = inp.get("file_path", "?")
         content = inp.get("content", "")
-        lines = content.count("\n") + 1
+        lines = content.count("\n") + 1 if content else 0
         return f"{path} ({lines} lines)"
     if name == "Edit":
         path = inp.get("file_path", "?")
-        old = truncate(inp.get("old_string", ""), 60)
+        old = truncate(inp.get("old_string", ""), 40)
         return f'{path} "{old}" -> ...'
     if name == "Bash":
-        return inp.get("command", raw_json)
+        cmd = inp.get("command", str(inp))
+        return truncate(cmd, 100)
     if name == "Glob":
-        return inp.get("pattern", raw_json)
+        return inp.get("pattern", str(inp))
     if name == "Grep":
         pattern = inp.get("pattern", "?")
         path = inp.get("path", ".")
         return f'/{pattern}/ in {path}'
-    if name == "Agent":
+    if name == "Task":
         desc = inp.get("description", "")
         agent_type = inp.get("subagent_type", "")
         return f"{agent_type}: {desc}" if agent_type else desc
 
-    return truncate(raw_json, 120)
+    return truncate(str(inp), 80)
 
 
 def handle_event(event: dict):
-    global current_block_type, current_tool_name, tool_input_json, in_text_block
-
     etype = event.get("type", "")
 
-    if etype == "message_start":
+    if etype == "system":
+        subtype = event.get("subtype", "")
+        if subtype == "init":
+            model = event.get("model", "?")
+            print(f"{DIM}[{ts()}] [init] model={model}{RESET}", flush=True)
+
+    elif etype == "assistant":
+        message = event.get("message", {})
+        content = message.get("content", [])
+        for block in content:
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                for line in text.splitlines():
+                    print(f"{DIM}[{ts()}]{RESET} {line}", flush=True)
+            elif btype == "thinking":
+                thinking = block.get("thinking", "")
+                preview = truncate(thinking, 100)
+                print(f"{DIM}[{ts()}] [thinking] {preview}{RESET}", flush=True)
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                summary = format_tool_input(name, inp)
+                print(f"{DIM}[{ts()}]{RESET} {CYAN}>>> {name}{RESET} {DIM}{summary}{RESET}", flush=True)
+
+    elif etype == "tool_use":
+        # Standalone tool_use event (alternative format)
+        name = event.get("tool", event.get("name", "?"))
+        inp = event.get("input", {})
+        summary = format_tool_input(name, inp)
+        print(f"{DIM}[{ts()}]{RESET} {CYAN}>>> {name}{RESET} {DIM}{summary}{RESET}", flush=True)
+
+    elif etype == "tool_result":
+        content = event.get("content", "")
+        if isinstance(content, list):
+            # Handle structured content
+            texts = [c.get("text", "") for c in content if isinstance(c, dict)]
+            content = "\n".join(texts)
+        preview = truncate(str(content), 150)
+        print(f"{DIM}[{ts()}]{RESET} {GREEN}<<< {preview}{RESET}", flush=True)
+
+    elif etype == "user":
+        # User turn (usually tool results being sent back)
         pass
 
-    elif etype == "content_block_start":
-        block = event.get("content_block", {})
-        current_block_type = block.get("type")
-
-        if current_block_type == "text":
-            in_text_block = True
-        elif current_block_type == "tool_use":
-            current_tool_name = block.get("name", "?")
-            tool_input_json = ""
-            if in_text_block:
-                print()  # newline after text before tool
-                in_text_block = False
-
-    elif etype == "content_block_delta":
-        delta = event.get("delta", {})
-        dtype = delta.get("type")
-
-        if dtype == "text_delta":
-            text = delta.get("text", "")
-            print(text, end="", flush=True)
-
-        elif dtype == "input_json_delta":
-            tool_input_json += delta.get("partial_json", "")
-
-    elif etype == "content_block_stop":
-        if current_block_type == "tool_use" and current_tool_name:
-            summary = format_tool_input(current_tool_name, tool_input_json)
-            print(f"\n{CYAN}>>> {current_tool_name}{RESET} {DIM}{summary}{RESET}", flush=True)
-            current_tool_name = None
-            tool_input_json = ""
-
-        if current_block_type == "text":
-            in_text_block = False
-
-        current_block_type = None
-
-    elif etype == "message_delta":
-        usage = event.get("usage", {})
-        output_tokens = usage.get("output_tokens", 0)
-        stop_reason = event.get("delta", {}).get("stop_reason", "")
-        if output_tokens:
-            print(f"\n{DIM}--- {stop_reason} ({output_tokens} tokens) ---{RESET}", flush=True)
-
-    elif etype == "message_stop":
-        pass
-
-    # Handle tool results (these come as separate messages in the stream)
     elif etype == "result":
-        result_text = event.get("result", "")
-        if result_text:
-            print(f"{GREEN}{truncate(str(result_text), 300)}{RESET}", flush=True)
+        # Final result
+        duration = event.get("duration_ms", 0)
+        turns = event.get("num_turns", 0)
+        cost = event.get("total_cost_usd", 0)
+        stop = event.get("stop_reason", "?")
+        print(f"\n{DIM}[{ts()}] --- {stop} | {turns} turns | {duration/1000:.1f}s | ${cost:.4f} ---{RESET}", flush=True)
+
+    elif etype == "rate_limit_event":
+        pass  # Ignore rate limit events
 
 
 def main():
@@ -143,16 +151,9 @@ def main():
             continue
         try:
             obj = json.loads(line)
+            handle_event(obj)
         except json.JSONDecodeError:
             continue
-
-        if obj.get("type") == "stream_event":
-            event = obj.get("event", {})
-            handle_event(event)
-        elif "event" in obj:
-            handle_event(obj["event"])
-        else:
-            handle_event(obj)
 
 
 if __name__ == "__main__":

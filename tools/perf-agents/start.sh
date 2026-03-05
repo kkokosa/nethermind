@@ -50,6 +50,7 @@ PORT=4040
 SERVER_ONLY=false
 WORKERS_ONLY=false
 SINGLE_WORKER=false
+BUILD_UI=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,8 +61,9 @@ while [[ $# -gt 0 ]]; do
         --port)          PORT="$2"; shift 2 ;;
         --server-only)   SERVER_ONLY=true; shift ;;
         --workers-only)  WORKERS_ONLY=true; shift ;;
+        --build)         BUILD_UI=true; shift ;;
         -h|--help)
-            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only]"
+            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only] [--build]"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -129,6 +131,16 @@ next_worker_number() {
 }
 
 # ── Launch server session ─────────────────────────────────────────────────────
+
+# ── Build dashboard UI ────────────────────────────────────────────────────
+
+if $BUILD_UI; then
+    DASHBOARD_DIR="$REPO_ROOT/tools/perf-dashboard/dashboard"
+    echo "[build] Building dashboard UI..."
+    (cd "$DASHBOARD_DIR" && npm install --silent && npm run build) || {
+        echo "WARNING: Dashboard build failed. Server will still start."
+    }
+fi
 
 if ! $WORKERS_ONLY; then
     if tmux has-session -t perf-server 2>/dev/null; then
