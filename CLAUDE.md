@@ -65,16 +65,20 @@ dotnet-gcdump collect --process-id <PID>
 
 ## Agent System
 
-Autonomous optimization agents in `tools/perf-agents/` (runs in WSL2 + zellij):
-- `start.sh --workers N` -- launch zellij session with server + N worker tabs
-- `stop.sh` -- kill zellij session + cleanup
-- `attach.sh` -- reattach to running session
+Autonomous optimization agents in `tools/perf-agents/` (runs in WSL2 + tmux):
+- `start.sh --workers N` -- launch tmux sessions (server + N workers)
+- `start.sh --worker` -- add one more worker to running fleet
+- `stop.sh` -- kill all sessions + cleanup
+- `stop.sh --worker N` -- kill just worker N
+- `cleanup.sh` -- remove stale status files, worktrees, DB entries, ghost processes
+- `attach.sh` -- list sessions; `attach.sh server` / `attach.sh 1` to attach
 - `orchestrate.py --status` -- check system state
 - Dashboard: http://localhost:4040 (when running)
 
-Each worker runs as a zellij tab: claims a target -> renames tab to W:<TARGET> ->
-creates git worktree -> researches -> implements -> benchmarks ->
-waits for human approval via dashboard.
+Each worker runs as an independent tmux session: claims a target ->
+renames session to W:<TARGET> -> creates git worktree -> researches ->
+implements -> benchmarks -> waits for human approval via dashboard.
+Workers are sandboxed via `.claude/settings.json` (bubblewrap).
 
 Key files:
 - `AGENT-SYSTEM.md` -- full architecture

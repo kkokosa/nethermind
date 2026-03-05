@@ -110,13 +110,23 @@ run_claude() {
     local work_dir="${3:-$WORKTREE_DIR}"
 
     # Substitute env vars in prompt, pipe to Claude Code
+    # Raw NDJSON goes to the log file (for dashboard), formatted output to terminal
     cd "$work_dir"
-    envsubst < "$prompt_file" | claude -p \
+    # Write prompt to a temp file so we don't pipe into claude's stdin
+    # (piping causes node.js to block-buffer stdout, killing streaming).
+    local prompt_tmp
+    prompt_tmp=$(mktemp /tmp/perf-agent-prompt.XXXXXX)
+    envsubst < "$prompt_file" > "$prompt_tmp"
+
+    # Use script(1) to wrap claude in a PTY so it streams unbuffered,
+    # then tee to the log file. script -q -c avoids extra headers.
+    script -q -f -c "claude -p \
         --dangerously-skip-permissions \
-        --output-format stream-text \
-        --max-turns "$MAX_TURNS" \
-        --verbose \
-        2>&1 | tee -a "$log_file"
+        --output-format text \
+        --max-turns $MAX_TURNS \
+        --verbose < '$prompt_tmp'" /dev/null 2>&1 | tee -a "$log_file"
+
+    rm -f "$prompt_tmp"
     cd "$REPO_ROOT"
 }
 
@@ -145,9 +155,9 @@ EXPECTED_IMPACT=$(echo "$CLAIM_JSON" | "$PYTHON" -c "import sys,json; print(json
 
 log "Claimed: $TARGET_ID → $LOOP_RUN_ID (branch: $BRANCH_NAME)"
 
-# Rename zellij tab to show target
-if [ -n "${ZELLIJ:-}" ]; then
-    zellij action rename-tab "W:${TARGET_ID}"
+# Rename tmux session to show target
+if [ -n "${TMUX:-}" ]; then
+    tmux rename-session "W:${TARGET_ID}"
 fi
 
 # Export for prompt substitution

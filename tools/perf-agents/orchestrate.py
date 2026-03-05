@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orchestrator v3: status + dry-run only. Workers are managed by zellij.
+Orchestrator v4: status + dry-run only. Workers are managed by tmux sessions.
 
 Usage:
     python3 orchestrate.py --status                     # show system state
@@ -19,19 +19,20 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = SCRIPT_DIR.parent.parent
 DB_PATH = REPO_ROOT / "tools" / "perf-dashboard" / "db" / "perf.db"
 RUN_DIR = SCRIPT_DIR / "run"
-SESSION_NAME = "perf-agents"
-
-
-def _zellij_session_active() -> bool:
-    """Check if the perf-agents zellij session is running."""
+def _get_tmux_sessions() -> dict:
+    """Get active perf-* tmux sessions."""
     try:
         result = subprocess.run(
-            ["zellij", "list-sessions"],
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
             capture_output=True, text=True, timeout=5,
         )
-        return SESSION_NAME in result.stdout
+        sessions = [s for s in result.stdout.strip().split("\n") if s]
+        return {
+            "server": "perf-server" in sessions,
+            "workers": [s for s in sessions if s.startswith("perf-worker-") or s.startswith("W:")],
+        }
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        return {"server": False, "workers": []}
 
 
 def _pid_alive(pid: int) -> bool:
@@ -63,15 +64,19 @@ def get_running_workers() -> list[dict]:
 
 
 def show_status():
-    session_active = _zellij_session_active()
+    tmux = _get_tmux_sessions()
     running = get_running_workers()
 
     print("=" * 64)
     print("  PERF-AI AGENT SYSTEM STATUS")
     print("=" * 64)
 
-    print(f"\n  Zellij session '{SESSION_NAME}': {'ACTIVE' if session_active else 'not running'}")
-    if not session_active:
+    print(f"\n  Server session:  {'ACTIVE' if tmux['server'] else 'not running'}")
+    if tmux["workers"]:
+        print(f"  Worker sessions: {', '.join(tmux['workers'])}")
+    else:
+        print("  Worker sessions: (none)")
+    if not tmux["server"] and not tmux["workers"]:
         print("    Start with: bash tools/perf-agents/start.sh")
 
     print(f"\n  Running workers: {len(running)}")

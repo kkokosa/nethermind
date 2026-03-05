@@ -1,16 +1,16 @@
-# Perf-AI Agent System (v3 — zellij)
+# Perf-AI Agent System (v4 — tmux + sandbox)
+
+## Changes from v3
+
+1. **tmux sessions** — server and each worker run in independent tmux sessions.
+   Killing a worker doesn't affect the server or other workers.
+2. **Bubblewrap sandboxing** — workers are restricted to their worktree via
+   `.claude/settings.json` filesystem/network rules.
+3. **No `--dangerously-skip-permissions`** — sandbox + `autoAllowBashIfSandboxed`
+   + explicit permission allow-list handles it.
+4. **Granular start/stop** — add or remove individual workers on the fly.
 
 ## Changes from v2
-
-1. **Zellij multiplexer** — all processes run as tabs in one zellij session.
-   Attach/detach at will, watch Claude Code in real time, named tabs.
-2. **WSL2-native** — no more PowerShell scripts or Windows quirks.
-   Everything runs in `bash` under WSL2 with `python3` hardcoded.
-3. **Orchestrator simplified** — `orchestrate.py` no longer spawns processes.
-   It's now status-only + dry-run preview. Zellij owns process lifecycle.
-4. **Tab naming** — workers rename their tab to `W:<TARGET_ID>` after claim.
-
-## Changes from v1
 
 1. **Dashboard pulls from API** — no JSON files on disk, no export script in the loop.
    Decision-server.py serves all data. Dashboard fetches via `useEffect` + polling.
@@ -23,30 +23,31 @@
 ## Architecture
 
 ```
+tmux sessions (independent, can kill/restart individually):
+
+  perf-server       →  decision-server.py (port 4040)
+  perf-worker-1     →  worker.sh → claims EVM-1, renames session to W:EVM-1
+  perf-worker-2     →  worker.sh → claims TRIE-1, renames session to W:TRIE-1
+  ...
+
                               HUMAN
                      http://localhost:4040  │  terminal
-                                ▼          ▼
-              ┌──────────────────────────────────────────────┐
-              │       zellij session "perf-agents"           │
-              │                                              │
-              │  Tab: [server]  [W:EVM-1]  [W:TRIE-1]  ...  │
-              │   ↕ attach/detach (Ctrl+O,d)                 │
-              │   ↕ navigate tabs (Alt+1..N)                 │
-              └──────────────────────────────────────────────┘
-                   │                │              │
-              ┌────┘                │              └────┐
-              ▼                     ▼                   ▼
-┌──────────────────────┐    ┌────────────┐     ┌────────────┐
-│decision-server.py    │    │ worker.sh  │     │ worker.sh  │
-│(port 4040)           │    │  (claim)   │     │  (claim)   │
-│                      │    │  EVM-1     │     │  TRIE-1    │
-│ GET /api/loops       │    └─────┬──────┘     └─────┬──────┘
-│ GET /api/workers     │          │                   │
-│ POST /api/decision   │          ▼                   ▼
-└──────────┬───────────┘    ┌────────────┐     ┌────────────┐
-           │ reads/writes   │ Worktree   │     │ Worktree   │
-           ▼                │ .wt/lr-001 │     │ .wt/lr-002 │
-    ┌─────────────┐         └────────────┘     └────────────┘
+                                |          |
+              ┌─────────────────┼──────────┤
+              │                 │          │
+              ▼                 ▼          ▼
+┌──────────────────────┐  ┌────────────┐  ┌────────────┐
+│ tmux: perf-server    │  │ tmux:      │  │ tmux:      │
+│ decision-server.py   │  │ W:EVM-1    │  │ W:TRIE-1   │
+│ (port 4040)          │  │ worker.sh  │  │ worker.sh  │
+│                      │  └─────┬──────┘  └─────┬──────┘
+│ GET /api/loops       │        │               │
+│ GET /api/workers     │        ▼               ▼
+│ POST /api/decision   │  ┌────────────┐  ┌────────────┐
+└──────────┬───────────┘  │ Worktree   │  │ Worktree   │
+           │ reads/writes │ .wt/lr-001 │  │ .wt/lr-002 │
+           ▼              └────────────┘  └────────────┘
+    ┌─────────────┐
     │   SQLite DB  │
     └─────────────┘
 ```
@@ -54,20 +55,99 @@
 ### Key commands
 
 ```bash
-# Start (interactive — opens zellij session)
+# Start server + 2 workers (default)
 bash tools/perf-agents/start.sh --workers 2
 
-# Detach from session (keeps everything running)
-# Press: Ctrl+O, d
+# Start server only
+bash tools/perf-agents/start.sh --server-only
 
-# Reattach
+# Add one more worker to running fleet
+bash tools/perf-agents/start.sh --worker
+
+# Add a worker for a specific target
+bash tools/perf-agents/start.sh --worker --target EVM-1
+
+# List all active sessions
 bash tools/perf-agents/attach.sh
+
+# Attach to server or worker
+bash tools/perf-agents/attach.sh server
+bash tools/perf-agents/attach.sh worker-1
+bash tools/perf-agents/attach.sh 1           # shorthand
+
+# Detach from session (keeps running)
+# Press: Ctrl+B, d
+
+# Session picker (switch between sessions)
+# Press: Ctrl+B, s
 
 # Check status (without attaching)
 python3 tools/perf-agents/orchestrate.py --status
 
 # Stop everything
 bash tools/perf-agents/stop.sh
+
+# Stop just the server
+bash tools/perf-agents/stop.sh --server-only
+
+# Stop just workers (server stays up)
+bash tools/perf-agents/stop.sh --workers-only
+
+# Stop one specific worker
+bash tools/perf-agents/stop.sh --worker 2
+
+# Stop everything + remove worktrees
+bash tools/perf-agents/stop.sh --force
+
+# Clean up stale state from crashed workers
+bash tools/perf-agents/cleanup.sh
+
+# Preview what cleanup would do
+bash tools/perf-agents/cleanup.sh --dry-run
+
+# Force cleanup (no prompts)
+bash tools/perf-agents/cleanup.sh --force
+```
+
+### Why tmux over zellij?
+
+- **Independent sessions**: each component has its own session. Killing a worker
+  doesn't take down the server or other workers.
+- **Headless-friendly**: tmux is standard in CI/SSH environments.
+- **Claude Code integration**: tmux has native support in Claude Code agent teams.
+- **Hot add/remove**: add workers to a running system without restarting anything.
+
+## Bubblewrap Sandboxing
+
+Workers are sandboxed via `.claude/settings.json` (checked into repo):
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "allowWrite": [".", "//tmp/perf-agents"],
+      "denyWrite": ["//etc", "//usr/bin", "//usr/local/bin"],
+      "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"]
+    },
+    "network": {
+      "allowedDomains": ["github.com", "api.github.com", "*.nuget.org", "api.anthropic.com"]
+    }
+  }
+}
+```
+
+**Key properties:**
+- `allowWrite: ["."]` — workers can only write within the project directory (their worktree)
+- `denyRead` — sensitive directories are inaccessible
+- `allowedDomains` — network restricted to GitHub, NuGet, and Anthropic API
+- `autoAllowBashIfSandboxed` — bash commands run without interactive prompts inside sandbox
+
+**Prerequisites:**
+```bash
+sudo apt install bubblewrap socat
 ```
 
 ## Git Worktrees
@@ -126,8 +206,7 @@ git branch -d "$BRANCH"  # only if discarded
 
 ### Baseline Benchmark Strategy
 
-This is the tricky part. Each worker needs to benchmark both master (baseline)
-and its branch (candidate). With worktrees, two options:
+Each worker needs to benchmark both master (baseline) and its branch (candidate).
 
 **Option A: Temporary baseline worktree** (recommended)
 - Create a second worktree on master, build and benchmark there
@@ -196,23 +275,6 @@ forced to a specific target with `--target EVM-1` (bypasses claim protocol).
 
 ## Dashboard Data Flow
 
-### Before (v1): static JSON files
-
-```
-SQLite → export_dashboard_data.py → JSON files → Vite bundles them → dashboard
-```
-
-Problems: stale data, requires re-export + rebuild or HMR hack, two processes.
-
-### After (v2): API endpoints
-
-```
-SQLite → decision-server.py /api/* → fetch() from React → dashboard
-```
-
-The decision server reuses the same query logic from export_dashboard_data.py
-but serves it as HTTP JSON responses. The dashboard polls every 5 seconds.
-
 ### API endpoints
 
 | Endpoint | Returns | Used by |
@@ -225,62 +287,13 @@ but serves it as HTTP JSON responses. The dashboard polls every 5 seconds.
 | `GET /api/workers` | Live worker status from status/*.json | LiveWorkerBar |
 | `POST /api/decision` | Submit approve/discard | PendingDecisions |
 
-### Dashboard data hook
-
-```jsx
-// hooks/useApiData.js
-import { useState, useEffect, useCallback } from 'react';
-
-export function useApiData(endpoint, pollInterval = 5000) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  const fetchData = useCallback(async () => {
-    try {
-      const res = await fetch(endpoint);
-      if (res.ok) {
-        setData(await res.json());
-        setError(null);
-      }
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [endpoint]);
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, pollInterval);
-    return () => clearInterval(interval);
-  }, [fetchData, pollInterval]);
-
-  return { data, loading, error, refetch: fetchData };
-}
-
-// Usage in App.jsx:
-const { data: loops } = useApiData('/api/loops');
-const { data: progress } = useApiData('/api/progress');
-const { data: benchmarks } = useApiData('/api/benchmarks');
-const { data: agents } = useApiData('/api/agents');
-```
+The decision server serves data from SQLite as HTTP JSON responses.
+The dashboard polls every 5 seconds.
 
 ### Graceful fallback
 
 When running without decision-server (plain `npm run dev`), API calls fail.
-The dashboard falls back to static JSON imports if API is unreachable:
-
-```jsx
-import FALLBACK_LOOPS from './data/loops.json';
-
-const { data: loops, error } = useApiData('/api/loops');
-const effectiveLoops = error ? FALLBACK_LOOPS : (loops || []);
-```
-
-This means the dashboard works in both modes:
-- **With decision-server**: live data, pending decisions, worker status
-- **Without**: static mock data for development/demo
+The dashboard falls back to static JSON imports if API is unreachable.
 
 ## Decision Flow (POST /api/decision)
 
@@ -308,10 +321,6 @@ This means the dashboard works in both modes:
    git worktree remove .worktrees/<loop-run-id>
 ```
 
-Note: the server does NOT auto-merge. It creates a PR. The human can then
-review the PR on GitHub and merge manually (squash-merge). This gives a
-second review opportunity and keeps the Git history clean.
-
 ### On Discard (verdict = "neutral" or "regression")
 
 ```
@@ -328,26 +337,13 @@ second review opportunity and keeps the Git history clean.
    git push origin --delete <branch-name>  # delete remote branch
 ```
 
-### What if the worker already died?
-
-The decision server handles this gracefully. Steps 1 (SQLite update) and 2-3
-(push/PR) are done by the server itself, not the worker. The worker's only
-post-decision role is worktree cleanup, which can also be done manually:
-
-```bash
-# Manual cleanup of all completed worktrees
-git worktree list | grep '.worktrees/' | while read dir _ _; do
-    git worktree remove "$dir" --force
-done
-```
-
 ## Orchestrator (Status-only)
 
-The orchestrator no longer spawns processes — zellij owns the process lifecycle.
+The orchestrator no longer spawns processes — tmux owns the process lifecycle.
 It provides status checks and dry-run previews:
 
 ```bash
-# Show system status (zellij session, workers, recent loops)
+# Show system status (tmux sessions, workers, recent loops)
 python3 orchestrate.py --status
 
 # Preview which targets would be claimed
@@ -357,30 +353,14 @@ python3 orchestrate.py --dry-run --workers 3
 python3 orchestrate.py --dry-run --workers 3 --exclude "EVM-1,TRIE-2"
 ```
 
-## Schema Changes
-
-Add to the status CHECK constraint:
-
-```sql
-CHECK (status IN ('research','implementing','benchmarking',
-                  'pending_decision','iterating',
-                  'done','discarded','error'))
-```
-
-Add a `worktree_path` column to loop_runs:
-
-```sql
-ALTER TABLE loop_runs ADD COLUMN worktree_path TEXT;
-```
-
 ## Directory Structure
 
 ```
 tools/perf-agents/
-├── start.sh                    # Generate KDL layout, launch zellij session
-├── stop.sh                     # Kill zellij session, cleanup
-├── attach.sh                   # Reattach to session (or list sessions)
-├── stop-legacy.sh              # Non-zellij fallback (PID-based stop)
+├── start.sh                    # Launch tmux sessions (server + workers)
+├── stop.sh                     # Kill tmux sessions with granular control
+├── attach.sh                   # Attach to specific tmux session
+├── cleanup.sh                  # Clean stale status, worktrees, DB entries, ghost processes
 ├── orchestrate.py              # Status + dry-run preview (no longer spawns)
 ├── worker.sh                   # Generic worker (claims target, runs loop)
 ├── claim_target.py             # Atomic target claim from SQLite
@@ -389,27 +369,16 @@ tools/perf-agents/
 │   ├── research.md             # Phase 1-2 prompt
 │   └── implement.md            # Phase 3-5 prompt
 ├── run/                        # Runtime (gitignored)
-│   ├── perf-agents.kdl         # Generated zellij layout
 │   ├── benchmark.lock
 │   ├── logs/*.log
 │   └── status/*.json
 └── AGENT-SYSTEM.md             # This file
+
+.claude/
+└── settings.json               # Sandbox config (checked in, applies to workers)
 
 .worktrees/                     # Worktrees (gitignored)
 ├── lr-001/                     # Worker 1
 ├── lr-002/                     # Worker 2
 └── lr-001-baseline/            # Temporary baseline worktree
 ```
-
-## Implementation Priority
-
-| Step | What | Effort |
-|------|------|--------|
-| 1 | Schema migration (add statuses + worktree_path) | S |
-| 2 | claim_target.py (atomic target claim) | S |
-| 3 | worker.sh v2 (worktrees + claim protocol) | M |
-| 4 | decision-server.py v2 (all /api/* endpoints, merge flow) | M |
-| 5 | Dashboard: useApiData hook + App.jsx refactor | M |
-| 6 | Dashboard: PendingDecisions component | M |
-| 7 | orchestrate.py v2 (just spawn N workers) | S |
-| 8 | start.sh / stop_all.sh | S |

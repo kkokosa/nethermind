@@ -328,15 +328,18 @@ def _pid_alive(pid: int) -> bool:
 
 
 def api_workers() -> list[dict]:
-    """Live worker status from run/status/*.json files."""
+    """Live worker status from run/status/*.json files. Removes stale entries."""
     results = []
     if STATUS_DIR.exists():
         for f in sorted(STATUS_DIR.glob("*.json")):
             try:
                 data = json.loads(f.read_text())
                 pid = data.get("pid", 0)
-                data["alive"] = bool(pid and _pid_alive(pid))
-                results.append(data)
+                if pid and _pid_alive(pid):
+                    data["alive"] = True
+                    results.append(data)
+                else:
+                    f.unlink(missing_ok=True)
             except (json.JSONDecodeError, OSError):
                 pass
     return results

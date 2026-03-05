@@ -2,46 +2,77 @@
 set -euo pipefail
 
 # =============================================================================
-# attach.sh — Reattach to the perf-agents zellij session
+# attach.sh — Attach to perf-ai tmux sessions
 #
 # Usage:
-#   ./tools/perf-agents/attach.sh          # attach to perf-agents session
-#   ./tools/perf-agents/attach.sh list      # list all zellij sessions
-#   ./tools/perf-agents/attach.sh ls        # same as list
+#   ./tools/perf-agents/attach.sh              # list all perf-* sessions
+#   ./tools/perf-agents/attach.sh server       # attach to perf-server
+#   ./tools/perf-agents/attach.sh worker-1     # attach to perf-worker-1
+#   ./tools/perf-agents/attach.sh 1            # shorthand for perf-worker-1
 #
-# Once attached, navigate tabs with Alt+<number>:
-#   Alt+1 = server, Alt+2 = worker-1, Alt+3 = worker-2, ...
-# Detach without killing: Ctrl+O, d
+# Once attached:
+#   Detach:            Ctrl+B, d
+#   Session picker:    Ctrl+B, s
 # =============================================================================
 
-SESSION_NAME="perf-agents"
-
-if ! command -v zellij &>/dev/null; then
-    echo "ERROR: zellij not found. Install: cargo install zellij"
+if ! command -v tmux &>/dev/null; then
+    echo "ERROR: tmux not found. Install: sudo apt install tmux"
     exit 1
 fi
 
+attach_session() {
+    local name="$1"
+    if ! tmux has-session -t "$name" 2>/dev/null; then
+        echo "No session '$name' found."
+        echo ""
+        echo "Active perf sessions:"
+        tmux list-sessions -F "  #{session_name}" 2>/dev/null | grep "perf-\|W:" || echo "  (none)"
+        echo ""
+        echo "Start with: bash tools/perf-agents/start.sh"
+        exit 1
+    fi
+    exec tmux attach-session -t "$name"
+}
+
 case "${1:-}" in
-    list|ls)
-        echo "Active zellij sessions:"
-        zellij list-sessions 2>/dev/null || echo "  (none)"
-        ;;
-    ""|attach)
-        if ! zellij list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}"; then
-            echo "No active '$SESSION_NAME' session."
-            echo "Start one with: bash tools/perf-agents/start.sh"
-            exit 1
+    ""|list|ls)
+        echo "Active perf-ai sessions:"
+        echo ""
+        SESSIONS=$(tmux list-sessions -F "#{session_name}  (#{session_windows} windows, created #{session_created_string})" 2>/dev/null | grep "perf-\|W:" || true)
+        if [ -z "$SESSIONS" ]; then
+            echo "  (none)"
+            echo ""
+            echo "Start with: bash tools/perf-agents/start.sh"
+        else
+            echo "$SESSIONS" | while read -r line; do
+                echo "  $line"
+            done
+            echo ""
+            echo "Attach: bash tools/perf-agents/attach.sh <name>"
+            echo "  e.g.  bash tools/perf-agents/attach.sh server"
+            echo "  e.g.  bash tools/perf-agents/attach.sh worker-1"
+            echo "  e.g.  bash tools/perf-agents/attach.sh 1  (shorthand)"
         fi
-        exec zellij attach "$SESSION_NAME"
+        ;;
+    server)
+        attach_session "perf-server"
+        ;;
+    worker-*)
+        attach_session "perf-${1}"
+        ;;
+    [0-9]|[0-9][0-9])
+        # Numeric shorthand: "1" → "perf-worker-1"
+        attach_session "perf-worker-${1}"
         ;;
     -h|--help)
-        echo "Usage: attach.sh [list|ls]"
-        echo "  (no args)  Attach to perf-agents session"
-        echo "  list/ls    List all zellij sessions"
+        echo "Usage: attach.sh [server|worker-N|N]"
+        echo "  (no args)   List all perf-* sessions"
+        echo "  server      Attach to perf-server"
+        echo "  worker-N    Attach to perf-worker-N"
+        echo "  N           Shorthand for perf-worker-N"
         ;;
     *)
-        echo "Unknown: $1"
-        echo "Usage: attach.sh [list|ls]"
-        exit 1
+        # Try as a session name directly (e.g. a W:EVM-1 renamed session)
+        attach_session "$1"
         ;;
 esac

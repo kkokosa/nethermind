@@ -2,17 +2,22 @@
 set -euo pipefail
 
 # =============================================================================
-# start.sh — Launch the perf-ai agent system in a zellij session
+# start.sh — Launch the perf-ai agent system as independent tmux sessions
 #
-# Creates a zellij session "perf-agents" with tabs:
-#   [server] [worker-1] [worker-2] ... [worker-N]
+# Each component runs in its own tmux session (fully decoupled lifecycle):
+#   perf-server     →  decision-server.py (port 4040)
+#   perf-worker-1   →  worker.sh (claims target, runs optimization loop)
+#   perf-worker-2   →  worker.sh
+#   ...
 #
 # Usage:
-#   ./tools/perf-agents/start.sh                    # 2 workers (default)
-#   ./tools/perf-agents/start.sh --workers 3        # 3 workers
+#   ./tools/perf-agents/start.sh                    # server + 2 workers (default)
+#   ./tools/perf-agents/start.sh --workers 3        # server + 3 workers
 #   ./tools/perf-agents/start.sh --target EVM-1     # specific target (1 worker)
 #   ./tools/perf-agents/start.sh --server-only      # just dashboard server
 #   ./tools/perf-agents/start.sh --workers-only     # just workers, no server
+#   ./tools/perf-agents/start.sh --worker            # add one more worker to fleet
+#   ./tools/perf-agents/start.sh --worker --target X # add one worker for target X
 #
 # Attach later:  bash tools/perf-agents/attach.sh
 # Stop:          bash tools/perf-agents/stop.sh
@@ -21,7 +26,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_DIR="$SCRIPT_DIR/run"
-SESSION_NAME="perf-agents"
 
 # ── Validate dependencies ────────────────────────────────────────────────────
 
@@ -32,7 +36,7 @@ check_cmd() {
     fi
 }
 
-check_cmd zellij "Install: cargo install zellij (or download from https://zellij.dev)"
+check_cmd tmux "Install: sudo apt install tmux"
 check_cmd python3 "Install Python 3 and ensure python3 is on PATH."
 check_cmd claude "Install Claude Code CLI."
 check_cmd sqlite3 "Install sqlite3."
@@ -45,17 +49,19 @@ EXCLUDE=""
 PORT=4040
 SERVER_ONLY=false
 WORKERS_ONLY=false
+SINGLE_WORKER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --workers)       WORKERS="$2"; shift 2 ;;
+        --worker)        SINGLE_WORKER=true; shift ;;
         --target)        TARGET="$2"; shift 2 ;;
         --exclude)       EXCLUDE="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
         --server-only)   SERVER_ONLY=true; shift ;;
         --workers-only)  WORKERS_ONLY=true; shift ;;
         -h|--help)
-            echo "Usage: start.sh [--workers N] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only]"
+            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only]"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -66,14 +72,30 @@ if $SERVER_ONLY && $WORKERS_ONLY; then
     exit 1
 fi
 
+# --worker mode: add exactly one worker to the existing fleet
+if $SINGLE_WORKER; then
+    WORKERS=1
+    WORKERS_ONLY=true
+fi
+
 # Force 1 worker when targeting a specific ID
-if [ -n "$TARGET" ]; then
+if [ -n "$TARGET" ] && ! $SERVER_ONLY; then
     WORKERS=1
 fi
 
 # ── Create directories ────────────────────────────────────────────────────────
 
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/status" "$REPO_ROOT/.worktrees"
+
+# ── Purge stale status files from previous runs ──────────────────────────────
+
+for f in "$RUN_DIR/status/"*.json; do
+    [ -f "$f" ] || continue
+    pid=$(python3 -c "import json; print(json.load(open('$f')).get('pid',0))" 2>/dev/null || echo 0)
+    if [ "$pid" != "0" ] && ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$f"
+    fi
+done
 
 # ── Ensure .worktrees is gitignored ──────────────────────────────────────────
 
@@ -90,102 +112,81 @@ if [ ! -f "$DB_PATH" ]; then
     python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
 fi
 
-# ── Kill existing session if any ──────────────────────────────────────────────
+# ── Helper: find next available worker number ────────────────────────────────
 
-if zellij list-sessions 2>/dev/null | grep -q "${SESSION_NAME}"; then
-    echo "[init] Removing existing '$SESSION_NAME' session..."
-    zellij delete-session "$SESSION_NAME" 2>/dev/null || true
-    zellij kill-session "$SESSION_NAME" 2>/dev/null || true
-    sleep 1
-fi
-
-# ── Build worker args string for KDL ─────────────────────────────────────────
-
-build_worker_args() {
-    local args=""
-    if [ -n "$TARGET" ]; then
-        args="        args \"--target\" \"$TARGET\"\n"
-    fi
-    if [ -n "$EXCLUDE" ]; then
-        args="${args}        args \"--exclude\" \"$EXCLUDE\"\n"
-    fi
-    echo -ne "$args"
+next_worker_number() {
+    local n=1
+    while tmux has-session -t "perf-worker-${n}" 2>/dev/null || \
+          tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -q "^W:.*"; do
+        # Check both perf-worker-N and renamed W:* sessions
+        if tmux has-session -t "perf-worker-${n}" 2>/dev/null; then
+            n=$((n + 1))
+        else
+            break
+        fi
+    done
+    echo "$n"
 }
 
-# ── Generate KDL layout ──────────────────────────────────────────────────────
+# ── Launch server session ─────────────────────────────────────────────────────
 
-LAYOUT_FILE="$RUN_DIR/perf-agents.kdl"
-
-{
-    echo 'layout {'
-    echo '    tab_template name="ui" {'
-    echo '        pane size=1 borderless=true {'
-    echo '            plugin location="tab-bar"'
-    echo '        }'
-    echo '        children'
-    echo '        pane size=2 borderless=true {'
-    echo '            plugin location="status-bar"'
-    echo '        }'
-    echo '    }'
-
-    # Server tab
-    if ! $WORKERS_ONLY; then
-        cat <<SERVERTAB
-    ui name="server" focus=true {
-        pane command="python3" {
-            args "tools/perf-agents/decision-server.py" "--port" "$PORT"
-            cwd "$REPO_ROOT"
-        }
-    }
-SERVERTAB
+if ! $WORKERS_ONLY; then
+    if tmux has-session -t perf-server 2>/dev/null; then
+        echo "[server] Session 'perf-server' already running — skipping"
+    else
+        tmux new-session -d -s perf-server -c "$REPO_ROOT" \
+            "python3 tools/perf-agents/decision-server.py --port $PORT; echo '[server exited — press Enter to close]'; read"
+        echo "[server] Started tmux session 'perf-server' (port $PORT)"
     fi
-
-    # Worker tabs
-    if ! $SERVER_ONLY; then
-        for i in $(seq 1 "$WORKERS"); do
-            FOCUS=""
-            if $WORKERS_ONLY && [ "$i" -eq 1 ]; then
-                FOCUS=" focus=true"
-            fi
-            echo "    ui name=\"worker-$i\"$FOCUS {"
-            echo '        pane command="bash" {'
-            # Build the args line: always start with the worker script path
-            ARGS_LINE="            args \"tools/perf-agents/worker.sh\""
-            if [ -n "$TARGET" ]; then
-                ARGS_LINE="$ARGS_LINE \"--target\" \"$TARGET\""
-            fi
-            if [ -n "$EXCLUDE" ]; then
-                ARGS_LINE="$ARGS_LINE \"--exclude\" \"$EXCLUDE\""
-            fi
-            echo "$ARGS_LINE"
-            echo "            cwd \"$REPO_ROOT\""
-            echo '        }'
-            echo '    }'
-        done
-    fi
-
-    echo '}'
-} > "$LAYOUT_FILE"
-
-# ── Launch ────────────────────────────────────────────────────────────────────
-
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  PERF-AI AGENT SYSTEM (zellij)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Session:    $SESSION_NAME"
-echo "  Workers:    $WORKERS"
-if [ -n "$TARGET" ]; then
-    echo "  Target:     $TARGET"
 fi
-echo "  Dashboard:  http://localhost:$PORT"
-echo "  Layout:     $LAYOUT_FILE"
-echo ""
-echo "  Detach:     Ctrl+O, d"
-echo "  Reattach:   bash tools/perf-agents/attach.sh"
-echo "  Stop:       bash tools/perf-agents/stop.sh"
-echo "  Navigate:   Alt+<number> to switch tabs"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
 
-exec zellij --layout "$LAYOUT_FILE" options --session-name "$SESSION_NAME"
+# ── Launch worker sessions ────────────────────────────────────────────────────
+
+if ! $SERVER_ONLY; then
+    START_NUM=$(next_worker_number)
+    for i in $(seq 0 $((WORKERS - 1))); do
+        WORKER_NUM=$((START_NUM + i))
+        SESSION_NAME="perf-worker-${WORKER_NUM}"
+
+        WORKER_CMD="bash tools/perf-agents/worker.sh"
+        if [ -n "$TARGET" ]; then
+            WORKER_CMD="$WORKER_CMD --target $TARGET"
+        fi
+        if [ -n "$EXCLUDE" ]; then
+            WORKER_CMD="$WORKER_CMD --exclude $EXCLUDE"
+        fi
+
+        tmux new-session -d -s "$SESSION_NAME" -c "$REPO_ROOT" \
+            "$WORKER_CMD; echo '[worker exited — press Enter to close]'; read"
+        echo "[worker] Started tmux session '$SESSION_NAME'"
+    done
+fi
+
+# ── Print status summary ─────────────────────────────────────────────────────
+
+echo ""
+echo "=================================================="
+echo "  PERF-AI AGENT SYSTEM (tmux)"
+echo "=================================================="
+
+# List all active perf sessions
+SESSIONS=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-\|^W:" | sort || true)
+if [ -n "$SESSIONS" ]; then
+    echo "  Active sessions:"
+    echo "$SESSIONS" | while read -r s; do
+        echo "    - $s"
+    done
+else
+    echo "  No active sessions"
+fi
+
+echo ""
+echo "  Dashboard:  http://localhost:$PORT"
+echo ""
+echo "  Attach:     bash tools/perf-agents/attach.sh server"
+echo "              bash tools/perf-agents/attach.sh worker-1"
+echo "  Detach:     Ctrl+B, d"
+echo "  Stop:       bash tools/perf-agents/stop.sh"
+echo "  Status:     python3 tools/perf-agents/orchestrate.py --status"
+echo "=================================================="
+echo ""

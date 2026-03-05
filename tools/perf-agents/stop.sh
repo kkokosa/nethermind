@@ -2,58 +2,102 @@
 set -euo pipefail
 
 # =============================================================================
-# stop.sh — Stop the perf-ai agent system (zellij session)
+# stop.sh — Stop the perf-ai agent system (tmux sessions)
 #
-# 1. Kills the "perf-agents" zellij session (SIGHUP → worker cleanup traps fire)
-# 2. Removes stale status files, lock files, PID files
-# 3. Optionally removes worktrees
-#
-# Usage:
-#   ./tools/perf-agents/stop.sh          # kill session + cleanup
-#   ./tools/perf-agents/stop.sh --force  # also remove all worktrees without prompting
+# Granular control over which sessions to kill:
+#   ./tools/perf-agents/stop.sh                  # kill all perf-* sessions + cleanup
+#   ./tools/perf-agents/stop.sh --server-only    # kill perf-server only
+#   ./tools/perf-agents/stop.sh --workers-only   # kill all perf-worker-* sessions
+#   ./tools/perf-agents/stop.sh --worker 2       # kill perf-worker-2 only
+#   ./tools/perf-agents/stop.sh --force          # also remove all worktrees
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_DIR="$SCRIPT_DIR/run"
-SESSION_NAME="perf-agents"
 FORCE=false
+SERVER_ONLY=false
+WORKERS_ONLY=false
+SINGLE_WORKER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --force) FORCE=true; shift ;;
+        --force)         FORCE=true; shift ;;
+        --server-only)   SERVER_ONLY=true; shift ;;
+        --workers-only)  WORKERS_ONLY=true; shift ;;
+        --worker)        SINGLE_WORKER="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: stop.sh [--force]"
-            echo "  --force  Also remove all worktrees without prompting"
+            echo "Usage: stop.sh [--force] [--server-only] [--workers-only] [--worker N]"
+            echo "  (no flags)     Kill all perf-* sessions + cleanup"
+            echo "  --server-only  Kill perf-server only"
+            echo "  --workers-only Kill all perf-worker-* / W:* sessions"
+            echo "  --worker N     Kill perf-worker-N (or W:* renamed session)"
+            echo "  --force        Also remove all worktrees without prompting"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
 done
 
+if $SERVER_ONLY && $WORKERS_ONLY; then
+    echo "ERROR: --server-only and --workers-only are mutually exclusive."
+    exit 1
+fi
+
 echo "Stopping perf-ai agent system..."
 
-# ── Kill zellij session ───────────────────────────────────────────────────────
+# ── Helper: kill a tmux session by name (tolerates missing) ──────────────────
 
-if command -v zellij &>/dev/null; then
-    if zellij list-sessions 2>/dev/null | grep -q "${SESSION_NAME}"; then
-        zellij kill-session "$SESSION_NAME" 2>/dev/null || true
-        zellij delete-session "$SESSION_NAME" 2>/dev/null || true
-        echo "  Killed zellij session '$SESSION_NAME'"
-    else
-        echo "  No active '$SESSION_NAME' session found"
+kill_session() {
+    local name="$1"
+    if tmux has-session -t "$name" 2>/dev/null; then
+        tmux kill-session -t "$name" 2>/dev/null || true
+        echo "  Killed session '$name'"
+        return 0
     fi
-else
-    echo "  zellij not found — skipping session kill"
+    return 1
+}
+
+# ── Kill specific worker ─────────────────────────────────────────────────────
+
+if [ -n "$SINGLE_WORKER" ]; then
+    if ! kill_session "perf-worker-${SINGLE_WORKER}"; then
+        # Try W:* renamed sessions — search all sessions
+        echo "  No session 'perf-worker-${SINGLE_WORKER}' found"
+    fi
+    echo ""
+    echo "Done. Remaining sessions:"
+    tmux list-sessions -F "  #{session_name}" 2>/dev/null | grep "perf-\|W:" || echo "  (none)"
+    exit 0
+fi
+
+# ── Kill server ──────────────────────────────────────────────────────────────
+
+if ! $WORKERS_ONLY; then
+    kill_session "perf-server" || echo "  No 'perf-server' session found"
+fi
+
+# ── Kill workers ─────────────────────────────────────────────────────────────
+
+if ! $SERVER_ONLY; then
+    KILLED=0
+    for s in $(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-worker-\|^W:" || true); do
+        kill_session "$s" && KILLED=$((KILLED + 1))
+    done
+    if [ "$KILLED" -eq 0 ]; then
+        echo "  No worker sessions found"
+    fi
 fi
 
 # ── Clean up runtime files ────────────────────────────────────────────────────
 
-rm -f "$RUN_DIR/status/"*.json 2>/dev/null || true
-rm -f "$RUN_DIR/benchmark.lock" 2>/dev/null || true
-rm -f "$RUN_DIR/server.pid" 2>/dev/null || true
-rm -f "$RUN_DIR/workers.pid" 2>/dev/null || true
-rm -f "$RUN_DIR/perf-agents.kdl" 2>/dev/null || true
-echo "  Cleaned up runtime files"
+if ! $SERVER_ONLY && ! $WORKERS_ONLY && [ -z "$SINGLE_WORKER" ]; then
+    # Full cleanup only when stopping everything
+    rm -f "$RUN_DIR/status/"*.json 2>/dev/null || true
+    rm -f "$RUN_DIR/benchmark.lock" 2>/dev/null || true
+    rm -f "$RUN_DIR/server.pid" 2>/dev/null || true
+    rm -f "$RUN_DIR/workers.pid" 2>/dev/null || true
+    echo "  Cleaned up runtime files"
+fi
 
 # ── Handle worktrees ─────────────────────────────────────────────────────────
 
@@ -96,4 +140,4 @@ if [ -d "$WORKTREE_DIR" ]; then
 fi
 
 echo ""
-echo "All agents stopped."
+echo "Done."
