@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
@@ -97,6 +98,10 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
     private ICodeInfoRepository _codeInfoRepository;
 
     private ReadOnlyMemory<byte> _returnDataBuffer = Array.Empty<byte>();
+    // Tracks the array rented from ArrayPool for return data, avoiding per-frame heap allocation.
+    // Lifetime: rented in RETURN/REVERT, returned to pool when ReturnDataBuffer is next overwritten.
+    private byte[]? _rentedReturnData;
+    private int _rentedReturnDataLength;
     protected VmState<TGasPolicy> _currentState;
     protected ReadOnlyMemory<byte>? _previousCallResult;
     protected UInt256 _previousCallOutputDestination;
@@ -128,6 +133,54 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
     public int OpCodeCount { get; set; }
 
     /// <summary>
+    /// Rents an array from the pool, copies return data into it, and tracks the rental.
+    /// Returns the previously rented array to the pool if one exists.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void SetPooledReturnData(ReadOnlyMemory<byte> returnData)
+    {
+        ReturnRentedReturnData();
+        int length = returnData.Length;
+        if (length == 0)
+        {
+            ReturnData = Array.Empty<byte>();
+            return;
+        }
+        byte[] rented = ArrayPool<byte>.Shared.Rent(length);
+        returnData.Span.CopyTo(rented);
+        _rentedReturnData = rented;
+        _rentedReturnDataLength = length;
+        ReturnData = rented;
+    }
+
+    /// <summary>
+    /// Returns the currently rented return data array to the pool, if any.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ReturnRentedReturnData()
+    {
+        byte[]? rented = _rentedReturnData;
+        if (rented is not null)
+        {
+            _rentedReturnData = null;
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>
+    /// Gets the return data as ReadOnlyMemory sliced to actual length (rented arrays may be oversized).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadOnlyMemory<byte> GetReturnDataMemory()
+    {
+        byte[] data = (byte[])ReturnData;
+        // If this is a rented (potentially oversized) array, slice to actual length
+        return _rentedReturnData is not null
+            ? new ReadOnlyMemory<byte>(data, 0, _rentedReturnDataLength)
+            : data;
+    }
+
+    /// <summary>
     /// Executes a transaction by iteratively processing call frames until a top-level call returns
     /// or a failure condition is reached. This method handles both precompiled contracts and regular
     /// EVM calls, along with proper state management, tracing, and error handling.
@@ -157,6 +210,9 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
         // Initialize dependencies for transaction tracing and state access.
         _txTracer = txTracer;
         _worldState = worldState;
+
+        // Return any rented return data array left over from the previous transaction
+        ReturnRentedReturnData();
 
         // Prepare the specification and opcode mapping based on the current block header.
         IReleaseSpec spec = BlockExecutionContext.Spec;
@@ -228,6 +284,7 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
                         TransactionSubstate substate = HandleException(in callResult, ref previousCallOutput, out bool terminate);
                         if (terminate)
                         {
+                            ReturnRentedReturnData();
                             _currentState = null;
                             return substate;
                         }
@@ -318,6 +375,7 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
             TransactionSubstate failSubstate = HandleFailure<TTracingInst>(failure, substateError, ref previousCallOutput, out bool shouldExit);
             if (shouldExit)
             {
+                ReturnRentedReturnData();
                 _currentState = null;
                 return failSubstate;
             }
@@ -1303,10 +1361,10 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
         debugger?.TryWait(ref _currentState, ref programCounter, ref gas, ref stack.Head);
 #endif
         // Process the return data based on its runtime type.
-        if (ReturnData is byte[] data)
+        if (ReturnData is byte[])
         {
-            // Fall back to returning a CallResult with a byte array as the return data.
-            return new CallResult(null, data, null, codeInfo.Version);
+            // Use GetReturnDataMemory to get properly sliced data (rented arrays may be oversized)
+            return new CallResult(null, GetReturnDataMemory(), null, codeInfo.Version);
         }
         else if (ReturnData is VmState<TGasPolicy> state)
         {
@@ -1315,8 +1373,8 @@ public unsafe partial class VirtualMachine<TGasPolicy>(
         return ReturnEof(codeInfo);
 
     Revert:
-        // Return a CallResult indicating a revert.
-        return new CallResult(null, (byte[])ReturnData, null, codeInfo.Version, shouldRevert: true, exceptionType);
+        // Return a CallResult indicating a revert, with properly sliced rented array
+        return new CallResult(null, GetReturnDataMemory(), null, codeInfo.Version, shouldRevert: true, exceptionType);
 
     OutOfGas:
         TGasPolicy.SetOutOfGas(ref gas);

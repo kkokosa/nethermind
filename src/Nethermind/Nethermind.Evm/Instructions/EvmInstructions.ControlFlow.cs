@@ -186,7 +186,8 @@ internal static partial class EvmInstructions
             goto OutOfGas;
         }
 
-        vm.ReturnData = returnData.ToArray();
+        // Use pooled array to avoid per-frame heap allocation for return data
+        vm.SetPooledReturnData(returnData);
 
         return EvmExceptionType.Revert;
     // Jump forward to be unpredicted by the branch predictor.
