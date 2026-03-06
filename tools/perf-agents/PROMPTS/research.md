@@ -102,6 +102,34 @@ Write ALL output to `${LOOP_STATE_DIR}/`:
 [same structure]
 ```
 
+## Optional: Propose New Targets
+
+If during research you discover adjacent optimization opportunities that are
+OUT OF SCOPE for ${TARGET_ID}, write them to `${LOOP_STATE_DIR}/new-targets.json`:
+
+```json
+[
+  {
+    "area": "evm",
+    "title": "Specific title with file:line reference",
+    "description": "Why this matters, mechanism, file:line refs...",
+    "difficulty": "S",
+    "impact": "high",
+    "confidence": 0.7,
+    "parent_id": "${TARGET_ID}",
+    "related_targets": []
+  }
+]
+```
+
+Rules:
+- Only propose with specific file:line references you verified exist
+- Include a clear mechanism (WHY it would be faster)
+- Be honest about confidence (0.0-1.0)
+- Do NOT propose vague ideas — only concrete, actionable targets
+- Maximum 3 proposals per research session
+- This is optional — do not force it
+
 ## Constraints
 
 - DO NOT write implementation code. Research only.
@@ -109,3 +137,4 @@ Write ALL output to `${LOOP_STATE_DIR}/`:
 - Cite file:line numbers, not vague claims.
 - Spend at most 30 tool calls before writing output.
 - If the target looks unpromising, say so explicitly in the hypothesis.
+- You may write new-targets.json but only with verified, specific proposals.

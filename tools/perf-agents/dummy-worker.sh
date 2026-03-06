@@ -43,13 +43,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Pick target
-if [ -z "$TARGET" ]; then
-    TARGET="${TARGETS[$RANDOM % ${#TARGETS[@]}]}"
-fi
+# TARGET is set later during claim phase (from backlog or fallback random)
+# If --target was passed, it's already set; otherwise it stays empty until claim.
 
-# Derive area from target ID
-TARGET_AREA=$(echo "$TARGET" | sed 's/-[0-9]*//' | tr '[:upper:]' '[:lower:]')
+# Derive area helper (called after target is known)
+derive_target_area() {
+    echo "$1" | sed 's/-[0-9]*//' | tr '[:upper:]' '[:lower:]'
+}
+
+TARGET_AREA=""
 
 # Phase duration
 case "$SPEED" in
@@ -58,14 +60,14 @@ case "$SPEED" in
     *)      PHASE_SEC=8 ;;
 esac
 
-# Generate IDs
+# Generate IDs (BRANCH_NAME set after target is claimed)
 LOOP_RUN_ID="LR-D$(date +%s)-$$"
-BRANCH_NAME="perf-ai/dummy-${TARGET,,}-$(date +%s)"
+BRANCH_NAME=""
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 MAX_ATTEMPTS=3
 
 mkdir -p "$RUN_DIR/status" "$RUN_DIR/logs"
-LOG_FILE="$RUN_DIR/logs/${LOOP_RUN_ID}-dummy.log"
+LOG_FILE="$RUN_DIR/logs/dummy-$$-init.log"  # overwritten inside loop per LOOP_RUN_ID
 
 # ── Fake benchmark data ──────────────────────────────────────────────────────
 
@@ -97,9 +99,10 @@ declare -A BENCH_METHODS=(
     [bp]="ProcessBlock ValidateBlock ExecuteTransactions"
 )
 
-HYPOTHESIS="${HYPOTHESES[$TARGET_AREA]:-Optimize hot path in $TARGET}"
-BENCH_CLASS="${BENCH_CLASSES[$TARGET_AREA]:-GenericBenchmarks}"
-METHODS="${BENCH_METHODS[$TARGET_AREA]:-Method1 Method2 Method3}"
+# HYPOTHESIS, BENCH_CLASS, METHODS are set after target is claimed
+HYPOTHESIS=""
+BENCH_CLASS=""
+METHODS=""
 
 START_EPOCH=$(date +%s)
 PHASE_START_EPOCH="$START_EPOCH"
@@ -107,6 +110,7 @@ DUMMY_COST=0.00
 TIMING_HISTORY='{"research":null,"attempts":[]}'
 CURRENT_PHASE=""
 CURRENT_DUMMY_ATTEMPT=0
+CLAIMED_FROM_BACKLOG=false
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -181,7 +185,7 @@ db_exec() {
     # Retry with busy timeout to handle concurrent workers
     local attempts=0
     while [ $attempts -lt 5 ]; do
-        if sqlite3 "$DB_PATH" "PRAGMA busy_timeout=5000; $1" 2>/dev/null; then
+        if sqlite3 "$DB_PATH" ".timeout 5000" "$1" 2>/dev/null; then
             return 0
         fi
         attempts=$((attempts + 1))
@@ -192,7 +196,7 @@ db_exec() {
 }
 
 db_query() {
-    sqlite3 "$DB_PATH" "PRAGMA busy_timeout=5000; $1" 2>/dev/null
+    sqlite3 "$DB_PATH" ".timeout 5000" "$1" 2>/dev/null
 }
 
 db_update_status() {
@@ -204,6 +208,12 @@ db_update_status() {
 cleanup() {
     log "Dummy worker cleanup"
     rm -f "$RUN_DIR/status/${LOOP_RUN_ID}.json"
+    # Release target back to ready if we die unexpectedly while active
+    if [ "${CLAIMED_FROM_BACKLOG:-false}" = "true" ]; then
+        sqlite3 "$DB_PATH" \
+            "UPDATE optimization_targets SET status='ready', updated_at=datetime('now') WHERE id='$TARGET' AND status='active'" \
+            2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -290,106 +300,211 @@ insert_benchmark_data() {
     done
 }
 
-# ── Rename tmux session ─────────────────────────────────────────────────────
-
-if [ -n "${TMUX:-}" ]; then
-    tmux rename-session "W:${TARGET}"
-fi
-
-# ── Simulate lifecycle ───────────────────────────────────────────────────────
+# ── Simulate lifecycle (loops until no targets remain) ───────────────────────
 
 log "=== DUMMY WORKER START ==="
-log "Target: $TARGET | Area: $TARGET_AREA | Speed: $SPEED | Fail: $FAIL | Pending: $STOP_AT_PENDING"
 
-# Phase 0: Claim — insert loop_run into DB
-phase "claiming" "Claiming target $TARGET..."
+FORCE_TARGET="$TARGET"  # save --target arg; empty means "pick from backlog"
 
-DIFFICULTY=$(python3 -c "import random; print(random.choice(['S','M','L']))")
-IMPACT=$(python3 -c "import random; print(random.choice(['low','med','high']))")
-COST=$(rand_float 0.5 8.0)
-TOKENS=$(( RANDOM % 500000 + 50000 ))
+while true; do
+    # Reset per-loop state
+    TARGET="$FORCE_TARGET"
+    BRANCH_NAME=""
+    CLAIMED_FROM_BACKLOG=false
+    LOOP_RUN_ID="LR-D$(date +%s)-$$"
+    LOG_FILE="$RUN_DIR/logs/${LOOP_RUN_ID}-dummy.log"
+    STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    START_EPOCH=$(date +%s)
+    PHASE_START_EPOCH="$START_EPOCH"
+    DUMMY_COST=0.00
+    TIMING_HISTORY='{"research":null,"attempts":[]}'
+    CURRENT_PHASE=""
+    CURRENT_DUMMY_ATTEMPT=0
 
-db_exec "
-    INSERT INTO loop_runs
-        (id, target_id, target_area, status, hypothesis, difficulty, expected_impact,
-         branch, agent_type, cost_usd, total_tokens)
-    VALUES
-        ('$LOOP_RUN_ID', '$TARGET', '$TARGET_AREA', 'research',
-         '$HYPOTHESIS', '$DIFFICULTY', '$IMPACT',
-         '$BRANCH_NAME', 'claude-code-dummy', $COST, $TOKENS);
-" || log "WARNING: failed to insert loop_run"
+    # ── Phase 0: Claim ──
+    phase "claiming" "Claiming target..."
 
-log "Claimed: $TARGET -> $LOOP_RUN_ID"
-
-# Phase 0b: Worktree
-phase "setup" "Creating worktree..."
-
-# Phase 1-2: Research
-db_update_status "research"
-phase "research" "Running Claude Code for research..."
-sleep "$PHASE_SEC"
-phase "research" "Analyzing hotspots in ${TARGET}..."
-sleep "$PHASE_SEC"
-phase "research" "Writing hypothesis..."
-log "Research complete — hypothesis: $HYPOTHESIS"
-
-# Phase 3-5: Implement + Benchmark loop
-for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-    log "=== Attempt $attempt/$MAX_ATTEMPTS ==="
-
-    db_update_status "implementing" ", iterations=$attempt"
-    phase "implementing" "Attempt $attempt — implementing optimization..." "$attempt"
-    sleep "$PHASE_SEC"
-    phase "implementing" "Attempt $attempt — writing benchmark..." "$attempt"
-    sleep "$PHASE_SEC"
-
-    db_update_status "benchmarking"
-    phase "benchmarking" "Attempt $attempt — running BenchmarkDotNet..." "$attempt"
-    sleep "$PHASE_SEC"
-
-    if $FAIL; then
-        # Insert mediocre benchmark data
-        log "Inserting neutral benchmark results..."
-        insert_benchmark_data false
-        phase "benchmarking" "Attempt $attempt — comparing results..." "$attempt"
-
-        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-            log "Attempt $attempt: insufficient improvement (-1.2%). Retrying."
-            db_update_status "iterating" ", approach='Attempt $attempt: delta=-1.2%'"
-            phase "iterating" "Preparing retry (attempt $((attempt+1)))" "$attempt"
+    HAS_BACKLOG=$(db_query "SELECT COUNT(*) FROM optimization_targets WHERE status='ready'" || echo "0")
+    if [ "$HAS_BACKLOG" != "0" ] && [ "$HAS_BACKLOG" != "" ]; then
+        if [ -n "$TARGET" ]; then
+            db_exec "UPDATE optimization_targets SET status='active', updated_at=datetime('now') WHERE id='$TARGET' AND status='ready'"
+            CLAIMED_FROM_BACKLOG=true
+            log "Claimed specific target from backlog: $TARGET"
         else
-            log "All attempts exhausted."
-            db_update_status "discarded" ", verdict='inconclusive', verdict_notes='Exhausted $MAX_ATTEMPTS attempts (dummy)'"
-            phase "error" "Exhausted $MAX_ATTEMPTS attempts" "$attempt"
-            log "=== DUMMY WORKER FINISHED (inconclusive) ==="
-            exit 0
-        fi
-    else
-        # Insert successful benchmark data
-        log "Inserting improved benchmark results..."
-        insert_benchmark_data true
-        phase "benchmarking" "Attempt $attempt — comparing results..." "$attempt"
-
-        BEST_DELTA=$(db_query "SELECT MIN(delta_mean_pct) FROM comparisons WHERE loop_run_id='$LOOP_RUN_ID' AND is_significant=1" || echo "-12.3")
-
-        log "IMPROVEMENT: ${BEST_DELTA}% — requesting human decision"
-        db_update_status "pending_decision"
-        phase "pending_decision" "Waiting for human review (${BEST_DELTA}% improvement)" "$attempt"
-
-        # Wait for human verdict from the dashboard
-        log "Awaiting human verdict at http://localhost:4040 ..."
-        while true; do
-            VERDICT=$(db_query "SELECT verdict FROM loop_runs WHERE id='$LOOP_RUN_ID'" || echo "")
-            if [ -n "$VERDICT" ]; then
-                log "Verdict received: $VERDICT"
-                log "=== DUMMY WORKER FINISHED ($VERDICT) ==="
-                exit 0
+            BACKLOG_TARGET=$(db_query "SELECT id FROM optimization_targets WHERE status='ready' ORDER BY priority_score DESC LIMIT 1" || echo "")
+            if [ -n "$BACKLOG_TARGET" ]; then
+                TARGET="$BACKLOG_TARGET"
+                db_exec "UPDATE optimization_targets SET status='active', updated_at=datetime('now') WHERE id='$TARGET' AND status='ready'"
+                CLAIMED_FROM_BACKLOG=true
+                log "Claimed from backlog: $TARGET"
             fi
-            write_status "pending_decision" \
-                "Waiting for human review (${BEST_DELTA}% improvement)" "$attempt"
-            sleep 5
-        done
+        fi
     fi
+
+    # Fallback: random from hardcoded list
+    if [ -z "$TARGET" ]; then
+        TARGET="${TARGETS[$RANDOM % ${#TARGETS[@]}]}"
+        log "Fallback: random target $TARGET (no backlog)"
+    fi
+
+    # Derive dependent variables
+    TARGET_AREA=$(derive_target_area "$TARGET")
+    HYPOTHESIS="${HYPOTHESES[$TARGET_AREA]:-Optimize hot path in $TARGET}"
+    BENCH_CLASS="${BENCH_CLASSES[$TARGET_AREA]:-GenericBenchmarks}"
+    METHODS="${BENCH_METHODS[$TARGET_AREA]:-Method1 Method2 Method3}"
+    BRANCH_NAME="perf-ai/dummy-${TARGET,,}-$(date +%s)"
+
+    if [ -n "${TMUX:-}" ]; then
+        tmux rename-session "W:${TARGET}" 2>/dev/null || true
+    fi
+
+    log "Target: $TARGET | Area: $TARGET_AREA | Speed: $SPEED | Fail: $FAIL"
+
+    DIFFICULTY=$(python3 -c "import random; print(random.choice(['S','M','L']))")
+    IMPACT=$(python3 -c "import random; print(random.choice(['low','med','high']))")
+    COST=$(rand_float 0.5 8.0)
+    TOKENS=$(( RANDOM % 500000 + 50000 ))
+
+    db_exec "
+        INSERT INTO loop_runs
+            (id, target_id, target_area, status, hypothesis, difficulty, expected_impact,
+             branch, agent_type, cost_usd, total_tokens)
+        VALUES
+            ('$LOOP_RUN_ID', '$TARGET', '$TARGET_AREA', 'research',
+             '$HYPOTHESIS', '$DIFFICULTY', '$IMPACT',
+             '$BRANCH_NAME', 'claude-code-dummy', $COST, $TOKENS);
+    " || log "WARNING: failed to insert loop_run"
+
+    log "Claimed: $TARGET -> $LOOP_RUN_ID (backlog: $CLAIMED_FROM_BACKLOG)"
+
+    # ── Phase 0b: Worktree ──
+    phase "setup" "Creating worktree..."
+
+    # ── Phase 1-2: Research ──
+    db_update_status "research"
+    phase "research" "Running Claude Code for research..."
+    sleep "$PHASE_SEC"
+    phase "research" "Analyzing hotspots in ${TARGET}..."
+    sleep "$PHASE_SEC"
+    phase "research" "Writing hypothesis..."
+    log "Research complete — hypothesis: $HYPOTHESIS"
+
+    # Randomly propose a new target (~40% chance)
+    PROPOSE_ROLL=$(python3 -c "import random; print(random.random() < 0.4)")
+    if [ "$PROPOSE_ROLL" = "True" ]; then
+        log "Discovered adjacent optimization opportunity, proposing..."
+        PROPOSAL_JSON=$(python3 -c "
+import json, random
+areas = ['evm', 'trie', 'state', 'rlp', 'db', 'bp']
+titles = [
+    'Avoid redundant hash in {area} commit path (src/Nethermind/Nethermind.{mod}/Fake.cs:42)',
+    'Replace LINQ .Select() with for loop in {area} hot path (src/Nethermind/Nethermind.{mod}/Hot.cs:99)',
+    'Pool byte[] allocations in {area} decode (src/Nethermind/Nethermind.{mod}/Decode.cs:17)',
+    'Cache computed value in {area} lookup (src/Nethermind/Nethermind.{mod}/Cache.cs:55)',
+    'Use Span<byte> instead of ToArray() in {area} encode (src/Nethermind/Nethermind.{mod}/Encode.cs:33)',
+]
+area = random.choice(areas)
+mod_map = {'evm': 'Evm', 'trie': 'Trie', 'state': 'State', 'rlp': 'Serialization.Rlp', 'db': 'Db.Rocks', 'bp': 'Consensus'}
+mod = mod_map.get(area, area.title())
+title = random.choice(titles).format(area=area, mod=mod)
+print(json.dumps([{
+    'area': area,
+    'title': title,
+    'description': f'Dummy proposal from research on $TARGET. {title}',
+    'difficulty': random.choice(['S', 'M']),
+    'impact': random.choice(['med', 'high']),
+    'confidence': round(random.uniform(0.5, 0.9), 2),
+    'parent_id': '$TARGET',
+    'related_targets': [],
+}]))
+")
+        PROPOSAL_FILE=$(mktemp /tmp/dummy-proposal-XXXXXX.json)
+        echo "$PROPOSAL_JSON" > "$PROPOSAL_FILE"
+        python3 "$SCRIPT_DIR/propose_target.py" \
+            --from-file "$PROPOSAL_FILE" \
+            --source "worker:$LOOP_RUN_ID" \
+            --db "$DB_PATH" 2>&1 | while read -r line; do log "Propose: $line"; done
+        rm -f "$PROPOSAL_FILE"
+    fi
+
+    # ── Phase 3-5: Implement + Benchmark loop ──
+    LOOP_DONE=false
+    for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+        log "=== Attempt $attempt/$MAX_ATTEMPTS ==="
+
+        db_update_status "implementing" ", iterations=$attempt"
+        phase "implementing" "Attempt $attempt — implementing optimization..." "$attempt"
+        sleep "$PHASE_SEC"
+        phase "implementing" "Attempt $attempt — writing benchmark..." "$attempt"
+        sleep "$PHASE_SEC"
+
+        db_update_status "benchmarking"
+        phase "benchmarking" "Attempt $attempt — running BenchmarkDotNet..." "$attempt"
+        sleep "$PHASE_SEC"
+
+        if $FAIL; then
+            log "Inserting neutral benchmark results..."
+            insert_benchmark_data false
+            phase "benchmarking" "Attempt $attempt — comparing results..." "$attempt"
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+                log "Attempt $attempt: insufficient improvement (-1.2%). Retrying."
+                db_update_status "iterating" ", approach='Attempt $attempt: delta=-1.2%'"
+                phase "iterating" "Preparing retry (attempt $((attempt+1)))" "$attempt"
+            else
+                log "All attempts exhausted."
+                db_update_status "discarded" ", verdict='inconclusive', verdict_notes='Exhausted $MAX_ATTEMPTS attempts (dummy)'"
+                if $CLAIMED_FROM_BACKLOG; then
+                    db_exec "UPDATE optimization_targets SET status='exhausted', updated_at=datetime('now') WHERE id='$TARGET' AND status='active'"
+                fi
+                LOOP_DONE=true
+                break
+            fi
+        else
+            log "Inserting improved benchmark results..."
+            insert_benchmark_data true
+            phase "benchmarking" "Attempt $attempt — comparing results..." "$attempt"
+
+            BEST_DELTA=$(db_query "SELECT MIN(delta_mean_pct) FROM comparisons WHERE loop_run_id='$LOOP_RUN_ID' AND is_significant=1" || echo "-12.3")
+
+            log "IMPROVEMENT: ${BEST_DELTA}% — requesting human decision"
+            db_update_status "pending_decision"
+            phase "pending_decision" "Waiting for human review (${BEST_DELTA}% improvement)" "$attempt"
+
+            log "Awaiting human verdict at http://localhost:4040 ..."
+            while true; do
+                VERDICT=$(db_query "SELECT verdict FROM loop_runs WHERE id='$LOOP_RUN_ID'" || echo "")
+                if [ -n "$VERDICT" ]; then
+                    log "Verdict received: $VERDICT"
+                    break
+                fi
+                write_status "pending_decision" \
+                    "Waiting for human review (${BEST_DELTA}% improvement)" "$attempt"
+                sleep 5
+            done
+            LOOP_DONE=true
+            break
+        fi
+    done
+
+    log "=== Target $TARGET complete ==="
+    rm -f "$RUN_DIR/status/${LOOP_RUN_ID}.json"
+
+    # If --target was specified, only do one target
+    if [ -n "$FORCE_TARGET" ]; then
+        log "Specific target done. Exiting."
+        break
+    fi
+
+    # Check if there are more ready targets
+    REMAINING=$(db_query "SELECT COUNT(*) FROM optimization_targets WHERE status='ready'" || echo "0")
+    if [ "$REMAINING" = "0" ] || [ "$REMAINING" = "" ]; then
+        log "No more targets in backlog. Exiting."
+        break
+    fi
+
+    log "Backlog has $REMAINING targets remaining. Claiming next..."
+    sleep 2
 done
 
 log "=== DUMMY WORKER FINISHED ==="

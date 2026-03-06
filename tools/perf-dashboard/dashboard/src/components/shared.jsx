@@ -23,7 +23,10 @@ export const StatusBadge = ({ status }) => {
     merged: { color: C.green, bg: C.greenBg, label: "MERGED" },
     implementing: { color: C.blue, bg: C.blueBg, label: "IMPL" },
     benchmarking: { color: C.amber, bg: C.amberBg, label: "BENCH" },
+    iterating: { color: C.blue, bg: C.blueBg, label: "RETRY" },
+    pending_decision: { color: C.cyan, bg: "rgba(6,182,212,0.08)", label: "PENDING" },
     discarded: { color: C.textDim, bg: "rgba(107,114,128,0.1)", label: "DISCARD" },
+    error: { color: C.red, bg: C.redBg, label: "ERROR" },
     research: { color: C.purple, bg: "rgba(168,85,247,0.08)", label: "RESEARCH" },
   };
   const s = map[status] || map.discarded;

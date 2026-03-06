@@ -234,7 +234,7 @@ log "Claimed: $TARGET_ID → $LOOP_RUN_ID (branch: $BRANCH_NAME)"
 
 # Rename tmux session to show target
 if [ -n "${TMUX:-}" ]; then
-    tmux rename-session "W:${TARGET_ID}"
+    tmux rename-session "W:${TARGET_ID}" 2>/dev/null || true
 fi
 
 # Export for prompt substitution
@@ -314,10 +314,24 @@ accumulate_cost "$RESEARCH_LOG"
 if [ ! -f "$WORKTREE_DIR/$LOOP_STATE_DIR/hypothesis.md" ]; then
     log "ERROR: Research phase produced no hypothesis.md"
     update_status "error" ", approach='Research failed: no hypothesis produced'"
+    # Release target back to ready so another worker can try
+    sqlite3 "$DB_PATH" \
+        "UPDATE optimization_targets SET status='ready', updated_at=datetime('now') WHERE id='$TARGET_ID' AND status='active'" \
+        2>/dev/null || true
     exit 1
 fi
 
 log "Research complete."
+
+# Propose new targets discovered during research
+if [ -f "$WORKTREE_DIR/$LOOP_STATE_DIR/new-targets.json" ]; then
+    log "Found new target proposals, submitting..."
+    PROPOSED=$("$PYTHON" "$SCRIPT_DIR/propose_target.py" \
+        --from-file "$WORKTREE_DIR/$LOOP_STATE_DIR/new-targets.json" \
+        --source "worker:$LOOP_RUN_ID" \
+        --db "$DB_PATH" 2>&1) || true
+    log "Target proposals: $PROPOSED"
+fi
 
 # Commit research artifacts
 cd "$WORKTREE_DIR"
@@ -415,6 +429,10 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
         cd "$REPO_ROOT"
     else
         log "All attempts exhausted."
+        # Mark target as exhausted in backlog
+        sqlite3 "$DB_PATH" \
+            "UPDATE optimization_targets SET status='exhausted', updated_at=datetime('now') WHERE id='$TARGET_ID' AND status='active'" \
+            2>/dev/null || true
         "$PYTHON" "$REPO_ROOT/tools/perf-dashboard/scripts/verdict.py" \
             --loop-run "$LOOP_RUN_ID" --verdict inconclusive \
             --notes "Exhausted $MAX_ATTEMPTS attempts. Best delta: ${BEST_DELTA:-none}" \

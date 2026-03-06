@@ -12,7 +12,7 @@ import BenchmarkTrends from "./components/BenchmarkTrends";
 import AgentEffectiveness from "./components/AgentEffectiveness";
 import AreaHitRate from "./components/AreaHitRate";
 import FailureAnalysis from "./components/FailureAnalysis";
-import TargetCoverage from "./components/TargetCoverage";
+import BacklogView from "./components/BacklogView";
 import ActivityLog from "./components/ActivityLog";
 
 export default function Dashboard() {
@@ -217,7 +217,7 @@ export default function Dashboard() {
           <AgentEffectiveness agents={AGENT_STATS} />
           <AreaHitRate areas={AREA_EFFECTIVENESS} />
           <FailureAnalysis failures={FAILURE_TAXONOMY} totalDiscarded={totalDiscarded} />
-          <TargetCoverage loops={loopRuns} />
+          <BacklogView />
           <ActivityLog progress={progressData} />
         </div>
       </div>

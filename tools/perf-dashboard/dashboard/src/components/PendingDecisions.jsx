@@ -4,6 +4,7 @@ import LogModal from './LogModal';
 const DECISION_API = '/api/pending';
 const SUBMIT_API = '/api/decision';
 const STATUS_API = '/api/workers';
+const BACKLOG_API = '/api/backlog';
 const POLL_INTERVAL = 5000;
 
 // ── Styling constants (matches existing dashboard theme) ────────────────────
@@ -212,11 +213,14 @@ function DecisionCard({ run, onDecision }) {
   const [submitting, setSubmitting] = useState(false);
   const [notes, setNotes] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
+  const [exhaustTarget, setExhaustTarget] = useState(false);
 
   const handleDecision = async (verdict) => {
     setSubmitting(true);
     try {
-      await onDecision(run.id, verdict, notes, verdict === 'improvement' ? autoMerge : false);
+      await onDecision(run.id, verdict, notes,
+        verdict === 'improvement' ? autoMerge : false,
+        verdict !== 'improvement' ? exhaustTarget : false);
     } finally {
       setSubmitting(false);
     }
@@ -360,6 +364,23 @@ function DecisionCard({ run, onDecision }) {
             >
               {submitting ? 'Submitting...' : autoMerge ? '\u2713 APPROVE & MERGE' : '\u2713 APPROVE (PR only)'}
             </button>
+            <label
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                cursor: 'pointer', userSelect: 'none',
+                fontSize: '11px', fontFamily: mono, color: colors.textDim,
+                minWidth: 'fit-content',
+              }}
+              title="When checked, the target is marked exhausted and won't be retried. Otherwise, the target returns to 'ready' for another attempt."
+            >
+              <input
+                type="checkbox"
+                checked={exhaustTarget}
+                onChange={(e) => setExhaustTarget(e.target.checked)}
+                style={{ accentColor: colors.red, cursor: 'pointer' }}
+              />
+              exhaust target
+            </label>
             <button
               onClick={() => handleDecision('neutral')}
               disabled={submitting}
@@ -371,11 +392,95 @@ function DecisionCard({ run, onDecision }) {
                 borderRadius: 4, opacity: submitting ? 0.6 : 1,
               }}
             >
-              {submitting ? 'Submitting...' : '\u2717 DISCARD'}
+              {submitting ? 'Submitting...' : exhaustTarget ? '\u2717 DISCARD & EXHAUST' : '\u2717 DISCARD (retry later)'}
             </button>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Proposed Target Card ────────────────────────────────────────────────────
+
+const areaColors = {
+  evm: '#3b82f6', trie: '#f97316', state: '#a855f7',
+  rlp: '#ec4899', db: '#6366f1', bp: '#06b6d4',
+};
+
+function ProposedTargetCard({ target, onApprove, onReject }) {
+  const [submitting, setSubmitting] = useState(false);
+  const areaColor = areaColors[target.area] || colors.textDim;
+
+  const handle = async (action) => {
+    setSubmitting(true);
+    try {
+      await action(target.id);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: colors.surface,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 6, marginBottom: 6,
+      padding: '10px 16px',
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <span style={{
+        fontSize: '11px', fontWeight: 700, color: areaColor,
+        background: `${areaColor}15`, padding: '2px 6px', borderRadius: 3,
+        fontFamily: mono, minWidth: 55, textAlign: 'center',
+      }}>
+        {target.id}
+      </span>
+      <span style={{ flex: 1, fontSize: '12px', color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {target.title}
+      </span>
+      {target.confidence != null && (
+        <span style={{ fontSize: '10px', color: colors.textDim, fontFamily: mono }}>
+          {(target.confidence * 100).toFixed(0)}%
+        </span>
+      )}
+      <span style={{ fontSize: '10px', color: colors.textDim, fontFamily: mono }}>
+        {target.source || 'unknown'}
+      </span>
+      <span style={{
+        fontSize: '10px', fontWeight: 600, fontFamily: mono,
+        color: target.difficulty === 'S' ? colors.green : target.difficulty === 'L' ? colors.red : colors.amber,
+      }}>
+        {target.difficulty}
+      </span>
+      <span style={{
+        fontSize: '10px', fontWeight: 600, fontFamily: mono,
+        color: target.impact === 'high' ? colors.green : target.impact === 'low' ? colors.textDim : colors.amber,
+      }}>
+        {target.impact}
+      </span>
+      <button
+        onClick={() => handle(onApprove)}
+        disabled={submitting}
+        style={{
+          fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: 3,
+          background: `${colors.green}20`, color: colors.green, border: `1px solid ${colors.green}40`,
+          cursor: 'pointer', fontFamily: mono, opacity: submitting ? 0.5 : 1,
+        }}
+      >
+        Approve
+      </button>
+      <button
+        onClick={() => handle(onReject)}
+        disabled={submitting}
+        style={{
+          fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: 3,
+          background: `${colors.red}20`, color: colors.red, border: `1px solid ${colors.red}40`,
+          cursor: 'pointer', fontFamily: mono, opacity: submitting ? 0.5 : 1,
+        }}
+      >
+        Reject
+      </button>
     </div>
   );
 }
@@ -385,17 +490,23 @@ function DecisionCard({ run, onDecision }) {
 export default function PendingDecisions() {
   const [pending, setPending] = useState([]);
   const [workers, setWorkers] = useState([]);
+  const [proposed, setProposed] = useState([]);
   const [error, setError] = useState(null);
-  const [showLogModal, setShowLogModal] = useState(null); // loop_run_id to show
+  const [showLogModal, setShowLogModal] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [pendingRes, statusRes] = await Promise.all([
+      const [pendingRes, statusRes, backlogRes] = await Promise.all([
         fetch(DECISION_API),
         fetch(STATUS_API),
+        fetch(BACKLOG_API),
       ]);
       if (pendingRes.ok) setPending(await pendingRes.json());
       if (statusRes.ok) setWorkers(await statusRes.json());
+      if (backlogRes.ok) {
+        const backlog = await backlogRes.json();
+        setProposed(backlog.filter(t => t.status === 'proposed'));
+      }
       setError(null);
     } catch (e) {
       setError('Cannot reach decision server. Is it running?');
@@ -408,12 +519,12 @@ export default function PendingDecisions() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  const handleDecision = async (loopRunId, verdict, notes, autoMerge = false) => {
+  const handleDecision = async (loopRunId, verdict, notes, autoMerge = false, exhaustTarget = false) => {
     try {
       const res = await fetch(SUBMIT_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ loopRunId, verdict, notes, autoMerge }),
+        body: JSON.stringify({ loopRunId, verdict, notes, autoMerge, exhaustTarget }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -433,10 +544,49 @@ export default function PendingDecisions() {
     }
   };
 
+  const handleApproveTarget = async (targetId) => {
+    try {
+      const res = await fetch('/api/backlog/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetId }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setProposed(prev => prev.filter(t => t.id !== targetId));
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (e) {
+      alert(`Failed: ${e.message}`);
+    }
+  };
+
+  const handleRejectTarget = async (targetId) => {
+    const reason = prompt('Rejection reason:');
+    if (reason === null) return;
+    try {
+      const res = await fetch('/api/backlog/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetId, reason }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setProposed(prev => prev.filter(t => t.id !== targetId));
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (e) {
+      alert(`Failed: ${e.message}`);
+    }
+  };
+
   const hasPending = pending.length > 0;
+  const hasProposed = proposed.length > 0;
   const hasWorkers = workers.length > 0;
 
-  if (!hasPending && !hasWorkers && !error) return null;
+  if (!hasPending && !hasProposed && !hasWorkers && !error) return null;
 
   return (
     <div style={{ marginBottom: 24 }}>
@@ -473,7 +623,7 @@ export default function PendingDecisions() {
               fontSize: '11px', fontFamily: mono, fontWeight: 700,
               color: colors.amber, letterSpacing: '0.05em',
             }}>
-              \u2605 PENDING DECISIONS
+              {"\u2605"} PENDING DECISIONS
             </span>
             <span style={{
               fontSize: '11px', fontFamily: mono, padding: '2px 8px',
@@ -488,6 +638,33 @@ export default function PendingDecisions() {
             <DecisionCard key={run.id} run={run} onDecision={handleDecision} />
           ))}
         </>
+      )}
+
+      {/* Proposed targets */}
+      {hasProposed && (
+        <div style={{ marginTop: hasPending ? 16 : 0 }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+          }}>
+            <span style={{
+              fontSize: '11px', fontFamily: mono, fontWeight: 700,
+              color: colors.purple, letterSpacing: '0.05em',
+            }}>
+              PROPOSED TARGETS
+            </span>
+            <span style={{
+              fontSize: '11px', fontFamily: mono, padding: '2px 8px',
+              background: colors.purple + '20', borderRadius: 10,
+              color: colors.purple, fontWeight: 600,
+            }}>
+              {proposed.length}
+            </span>
+          </div>
+
+          {proposed.map(t => (
+            <ProposedTargetCard key={t.id} target={t} onApprove={handleApproveTarget} onReject={handleRejectTarget} />
+          ))}
+        </div>
       )}
 
       <style>{`

@@ -29,54 +29,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from target_utils import parse_targets, derive_area, update_target_status
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = SCRIPT_DIR.parent.parent
 DB_PATH = REPO_ROOT / "tools" / "perf-dashboard" / "db" / "perf.db"
 TARGETS_FILE = REPO_ROOT / "docs" / "perf-ai" / "OPTIMIZATION-TARGETS.md"
-
-IMPACT_SCORE = {"high": 3, "med": 2, "low": 1}
-DIFFICULTY_SCORE = {"S": 3, "M": 2, "L": 1}
-
-TARGET_AREA_MAP = {
-    "EVM": "evm", "TRIE": "trie", "STATE": "state",
-    "RLP": "rlp", "DB": "db", "BP": "bp",
-}
-
-
-def parse_targets(filepath: Path) -> list[dict]:
-    """Parse OPTIMIZATION-TARGETS.md to extract targets with priority scores."""
-    content = filepath.read_text()
-    targets = []
-
-    for match in re.finditer(r"### (\w+-\d+):\s*(.+?)(?=\n)", content):
-        target_id = match.group(1)
-        title = match.group(2).strip()
-
-        section_start = match.end()
-        section_end = content.find("\n### ", section_start)
-        if section_end == -1:
-            section_end = len(content)
-        section = content[section_start:section_end]
-
-        diff_match = re.search(r"\*\*Difficulty\*\*:\s*(\w+)", section)
-        impact_match = re.search(r"\*\*Impact\*\*:\s*(\w+)", section)
-
-        difficulty = diff_match.group(1) if diff_match else "M"
-        impact = impact_match.group(1) if impact_match else "med"
-
-        impact_w = IMPACT_SCORE.get(impact.lower(), 1)
-        ease_w = DIFFICULTY_SCORE.get(difficulty.upper(), 1)
-
-        targets.append({
-            "target_id": target_id,
-            "title": title,
-            "difficulty": difficulty,
-            "impact": impact.lower(),
-            "priority_score": impact_w * ease_w,
-        })
-
-    targets.sort(key=lambda t: t["priority_score"], reverse=True)
-    return targets
 
 
 def next_loop_id(conn: sqlite3.Connection) -> str:
@@ -90,9 +48,15 @@ def next_loop_id(conn: sqlite3.Connection) -> str:
     return f"LR-{num + 1:03d}"
 
 
-def derive_area(target_id: str) -> str:
-    prefix = target_id.split("-")[0].upper()
-    return TARGET_AREA_MAP.get(prefix, prefix.lower())
+def _has_targets_table(conn: sqlite3.Connection) -> bool:
+    """Check if optimization_targets table exists and has rows."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM optimization_targets"
+        ).fetchone()
+        return row[0] > 0
+    except sqlite3.OperationalError:
+        return False
 
 
 def claim(db_path: Path, targets_file: Path,
@@ -100,45 +64,84 @@ def claim(db_path: Path, targets_file: Path,
           dry_run: bool = False) -> dict | None:
     """
     Atomically claim a target. Returns claim dict or None.
-    """
-    all_targets = parse_targets(targets_file)
-    exclude = exclude or set()
 
+    Priority: SQLite optimization_targets table (if populated),
+    fallback to OPTIMIZATION-TARGETS.md with a warning.
+    """
+    exclude = exclude or set()
     conn = sqlite3.connect(str(db_path), timeout=30)
+
     try:
         # BEGIN IMMEDIATE acquires write lock before SELECT
         conn.execute("BEGIN IMMEDIATE")
 
-        # Get targets already claimed (not discarded/error)
-        active_rows = conn.execute(
-            """SELECT DISTINCT target_id FROM loop_runs
-               WHERE status NOT IN ('discarded', 'error')"""
-        ).fetchall()
-        active_targets = {row[0] for row in active_rows}
+        use_db_targets = _has_targets_table(conn)
 
-        if force_target:
-            # Force specific target (may re-attempt a previously failed one)
-            candidates = [t for t in all_targets if t["target_id"] == force_target]
-            if not candidates:
-                conn.rollback()
-                print(f"Error: target {force_target} not found", file=sys.stderr)
-                return None
-            if force_target in active_targets:
-                conn.rollback()
-                print(f"Warning: {force_target} already active, claiming anyway",
-                      file=sys.stderr)
-            chosen = candidates[0]
+        if use_db_targets:
+            # ── SQLite-based claim ──
+            if force_target:
+                row = conn.execute(
+                    "SELECT id, area, title, difficulty, impact, priority_score "
+                    "FROM optimization_targets WHERE id=?",
+                    (force_target,),
+                ).fetchone()
+                if not row:
+                    conn.rollback()
+                    print(f"Error: target {force_target} not found in DB", file=sys.stderr)
+                    return None
+                chosen = {
+                    "target_id": row[0], "area": row[1], "title": row[2],
+                    "difficulty": row[3], "impact": row[4], "priority_score": row[5],
+                }
+            else:
+                exclude_placeholders = ",".join("?" for _ in exclude) if exclude else "''"
+                query = f"""
+                    SELECT id, area, title, difficulty, impact, priority_score
+                    FROM optimization_targets
+                    WHERE status='ready'
+                    {"AND id NOT IN (" + exclude_placeholders + ")" if exclude else ""}
+                    ORDER BY priority_score DESC
+                    LIMIT 1
+                """
+                params = tuple(exclude) if exclude else ()
+                row = conn.execute(query, params).fetchone()
+                if not row:
+                    conn.rollback()
+                    return None
+                chosen = {
+                    "target_id": row[0], "area": row[1], "title": row[2],
+                    "difficulty": row[3], "impact": row[4], "priority_score": row[5],
+                }
         else:
-            # Pick highest priority unclaimed target
-            available = [
-                t for t in all_targets
-                if t["target_id"] not in active_targets
-                and t["target_id"] not in exclude
-            ]
-            if not available:
-                conn.rollback()
-                return None
-            chosen = available[0]  # already sorted by priority
+            # ── Fallback: parse markdown ──
+            print("Warning: optimization_targets table empty, falling back to markdown",
+                  file=sys.stderr)
+            all_targets = parse_targets(targets_file)
+
+            # Get targets already claimed (not discarded/error)
+            active_rows = conn.execute(
+                """SELECT DISTINCT target_id FROM loop_runs
+                   WHERE status NOT IN ('discarded', 'error')"""
+            ).fetchall()
+            active_targets = {row[0] for row in active_rows}
+
+            if force_target:
+                candidates = [t for t in all_targets if t["target_id"] == force_target]
+                if not candidates:
+                    conn.rollback()
+                    print(f"Error: target {force_target} not found", file=sys.stderr)
+                    return None
+                chosen = candidates[0]
+            else:
+                available = [
+                    t for t in all_targets
+                    if t["target_id"] not in active_targets
+                    and t["target_id"] not in exclude
+                ]
+                if not available:
+                    conn.rollback()
+                    return None
+                chosen = available[0]
 
         target_id = chosen["target_id"]
         now = datetime.now(timezone.utc)
@@ -159,6 +162,7 @@ def claim(db_path: Path, targets_file: Path,
                 "dry_run": True,
             }
 
+        # Insert loop run
         conn.execute(
             """INSERT INTO loop_runs
                (id, target_id, target_area, hypothesis, branch,
@@ -168,6 +172,15 @@ def claim(db_path: Path, targets_file: Path,
              f"Claimed by worker, research pending ({chosen['title'][:80]})",
              branch, chosen["difficulty"], chosen["impact"]),
         )
+
+        # Update target status: ready -> active (if using DB targets)
+        if use_db_targets:
+            conn.execute(
+                "UPDATE optimization_targets SET status='active', updated_at=datetime('now') "
+                "WHERE id=? AND status='ready'",
+                (target_id,),
+            )
+
         conn.commit()
 
         return {

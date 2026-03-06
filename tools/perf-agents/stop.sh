@@ -66,7 +66,7 @@ if [ -n "$SINGLE_WORKER" ]; then
     fi
     echo ""
     echo "Done. Remaining sessions:"
-    tmux list-sessions -F "  #{session_name}" 2>/dev/null | grep "perf-\|W:" || echo "  (none)"
+    tmux list-sessions -F "  #{session_name}" 2>/dev/null | grep "perf-\|W:\|W_" || echo "  (none)"
     exit 0
 fi
 
@@ -74,13 +74,14 @@ fi
 
 if ! $WORKERS_ONLY; then
     kill_session "perf-server" || echo "  No 'perf-server' session found"
+    kill_session "perf-researcher" || true
 fi
 
 # ── Kill workers ─────────────────────────────────────────────────────────────
 
 if ! $SERVER_ONLY; then
     KILLED=0
-    for s in $(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-worker-\|^W:" || true); do
+    for s in $(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-worker-\|^perf-dummy-\|^W:\|^W_" || true); do
         kill_session "$s" && KILLED=$((KILLED + 1))
     done
     if [ "$KILLED" -eq 0 ]; then

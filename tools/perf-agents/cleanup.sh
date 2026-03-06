@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: cleanup.sh [--force] [--dry-run] [--reset-db] [--port N]"
             echo "  --force     Remove everything without prompting"
             echo "  --dry-run   Show what would be cleaned, don't touch anything"
-            echo "  --reset-db  Wipe all loop_runs, comparisons, and benchmark_results"
+            echo "  --reset-db  Wipe all loop_runs, comparisons, benchmark_results, and optimization_targets"
             echo "  --port N    Dashboard port to check for ghost processes (default: 4040)"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
@@ -119,8 +119,14 @@ if [ -f "$DB_PATH" ]; then
 
             if ! $ALIVE; then
                 action "Mark $run_id ($target_id, status=$status) as error"
-                $DRY_RUN || sqlite3 "$DB_PATH" \
-                    "UPDATE loop_runs SET status='error', approach=COALESCE(approach,'') || ' [cleaned up: worker died]', updated_at=datetime('now') WHERE id='$run_id'"
+                if ! $DRY_RUN; then
+                    sqlite3 "$DB_PATH" \
+                        "UPDATE loop_runs SET status='error', approach=COALESCE(approach,'') || ' [cleaned up: worker died]', updated_at=datetime('now') WHERE id='$run_id'"
+                    # Release the target back to ready so it can be re-claimed
+                    sqlite3 "$DB_PATH" \
+                        "UPDATE optimization_targets SET status='ready', updated_at=datetime('now') WHERE id='$target_id' AND status='active'" \
+                        2>/dev/null || true
+                fi
             fi
         done <<< "$STALE_RUNS"
         echo ""
@@ -218,19 +224,19 @@ if $RESET_DB && [ -f "$DB_PATH" ]; then
 
     WIPE=false
     if $DRY_RUN; then
-        echo "  [dry-run] Would delete all loop_runs, comparisons, benchmark_results"
+        echo "  [dry-run] Would delete all loop_runs, comparisons, benchmark_results, optimization_targets"
     elif $FORCE; then
         WIPE=true
     else
-        read -rp "  Wipe all loop_runs, comparisons, and benchmark_results? [y/N] " answer
+        read -rp "  Wipe all loop_runs, comparisons, benchmark_results, and optimization_targets? [y/N] " answer
         case "$answer" in
             [yY]|[yY][eE][sS]) WIPE=true ;;
         esac
     fi
 
     if $WIPE && ! $DRY_RUN; then
-        sqlite3 "$DB_PATH" "DELETE FROM comparisons; DELETE FROM benchmark_results; DELETE FROM loop_runs;"
-        echo "  Wiped loop_runs, comparisons, benchmark_results"
+        sqlite3 "$DB_PATH" "DELETE FROM comparisons; DELETE FROM benchmark_results; DELETE FROM loop_runs; DELETE FROM optimization_targets;"
+        echo "  Wiped loop_runs, comparisons, benchmark_results, optimization_targets"
     fi
     echo ""
 fi

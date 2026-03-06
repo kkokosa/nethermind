@@ -51,6 +51,7 @@ SERVER_ONLY=false
 WORKERS_ONLY=false
 SINGLE_WORKER=false
 BUILD_UI=false
+RESEARCHER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -62,8 +63,9 @@ while [[ $# -gt 0 ]]; do
         --server-only)   SERVER_ONLY=true; shift ;;
         --workers-only)  WORKERS_ONLY=true; shift ;;
         --build)         BUILD_UI=true; shift ;;
+        --researcher)    RESEARCHER=true; shift ;;
         -h|--help)
-            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only] [--build]"
+            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only] [--build] [--researcher]"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -109,10 +111,16 @@ fi
 # ── Initialize DB ─────────────────────────────────────────────────────────────
 
 DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
-if [ ! -f "$DB_PATH" ]; then
-    echo "[init] Creating database..."
-    python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
-fi
+echo "[init] Initializing database (+ migrations)..."
+python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
+
+# ── Seed backlog from markdown (idempotent) ──────────────────────────────────
+
+echo "[init] Seeding optimization backlog..."
+python3 "$SCRIPT_DIR/backlog.py" --db "$DB_PATH" \
+    --targets-file "$REPO_ROOT/docs/perf-ai/OPTIMIZATION-TARGETS.md" seed || {
+    echo "WARNING: Backlog seeding failed (non-fatal)"
+}
 
 # ── Helper: find next available worker number ────────────────────────────────
 
@@ -174,6 +182,18 @@ if ! $SERVER_ONLY; then
     done
 fi
 
+# ── Launch researcher session ────────────────────────────────────────────────
+
+if $RESEARCHER; then
+    if tmux has-session -t perf-researcher 2>/dev/null; then
+        echo "[researcher] Session 'perf-researcher' already running — skipping"
+    else
+        tmux new-session -d -s perf-researcher -c "$REPO_ROOT" \
+            "bash tools/perf-agents/researcher.sh; echo '[researcher exited — press Enter to close]'; read"
+        echo "[researcher] Started tmux session 'perf-researcher'"
+    fi
+fi
+
 # ── Print status summary ─────────────────────────────────────────────────────
 
 echo ""
@@ -182,7 +202,7 @@ echo "  PERF-AI AGENT SYSTEM (tmux)"
 echo "=================================================="
 
 # List all active perf sessions
-SESSIONS=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-\|^W:" | sort || true)
+SESSIONS=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^perf-\|^W:\|^W_" | sort || true)
 if [ -n "$SESSIONS" ]; then
     echo "  Active sessions:"
     echo "$SESSIONS" | while read -r s; do

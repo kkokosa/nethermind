@@ -77,6 +77,9 @@ case "${1:-}" in
     server)
         attach_session "perf-server"
         ;;
+    researcher)
+        attach_session "perf-researcher"
+        ;;
     worker-*)
         attach_session "perf-${1}"
         ;;

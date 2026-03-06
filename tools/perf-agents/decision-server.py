@@ -346,6 +346,64 @@ def api_workers() -> list[dict]:
     return results
 
 
+# ── API: /api/backlog ────────────────────────────────────────────────────────
+
+def api_backlog() -> list[dict]:
+    """All optimization targets from the backlog."""
+    conn = get_db()
+    try:
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM optimization_targets ORDER BY status, priority_score DESC"
+            )
+            return rows_to_dicts(cursor)
+        except sqlite3.OperationalError:
+            return []
+    finally:
+        conn.close()
+
+
+def api_backlog_approve(body: dict) -> dict:
+    """Approve a proposed target (move to ready)."""
+    target_id = body.get("targetId", "")
+    if not target_id:
+        return {"error": "targetId is required"}
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "UPDATE optimization_targets SET status='ready', updated_at=datetime('now') "
+            "WHERE id=? AND status='proposed'",
+            (target_id,),
+        )
+        conn.commit()
+        if cursor.rowcount > 0:
+            return {"ok": True, "targetId": target_id, "status": "ready"}
+        return {"error": f"Target {target_id} not found or not in 'proposed' status"}
+    finally:
+        conn.close()
+
+
+def api_backlog_reject(body: dict) -> dict:
+    """Reject a proposed target."""
+    target_id = body.get("targetId", "")
+    reason = body.get("reason", "")
+    if not target_id:
+        return {"error": "targetId is required"}
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "UPDATE optimization_targets SET status='rejected', reject_reason=?, "
+            "updated_at=datetime('now') WHERE id=? AND status='proposed'",
+            (reason, target_id),
+        )
+        conn.commit()
+        if cursor.rowcount > 0:
+            return {"ok": True, "targetId": target_id, "status": "rejected"}
+        return {"error": f"Target {target_id} not found or not in 'proposed' status"}
+    finally:
+        conn.close()
+
+
 # ── API: POST /api/decision ──────────────────────────────────────────────────
 
 def api_decision(body: dict) -> dict:
@@ -358,6 +416,7 @@ def api_decision(body: dict) -> dict:
     verdict = body.get("verdict", "")
     notes = body.get("notes", "")
     auto_merge = body.get("autoMerge", False)
+    exhaust_target = body.get("exhaustTarget", False)
 
     valid = {"improvement", "regression", "neutral", "inconclusive"}
     if verdict not in valid:
@@ -397,6 +456,32 @@ def api_decision(body: dict) -> dict:
                 status=?, updated_at=datetime('now')
             WHERE id=?
         """, (verdict, notes, confidence, new_status, loop_run_id))
+
+        # Update optimization target status based on verdict
+        try:
+            if verdict == "improvement":
+                conn.execute(
+                    "UPDATE optimization_targets SET status='completed', updated_at=datetime('now') "
+                    "WHERE id=? AND status='active'",
+                    (target_id,),
+                )
+            elif exhaust_target:
+                # Human says this target is not worth retrying
+                conn.execute(
+                    "UPDATE optimization_targets SET status='exhausted', updated_at=datetime('now') "
+                    "WHERE id=? AND status='active'",
+                    (target_id,),
+                )
+            else:
+                # Target goes back to ready for potential retry
+                conn.execute(
+                    "UPDATE optimization_targets SET status='ready', updated_at=datetime('now') "
+                    "WHERE id=? AND status='active'",
+                    (target_id,),
+                )
+        except sqlite3.OperationalError:
+            pass  # Table may not exist yet
+
         conn.commit()
 
         result = {
@@ -574,6 +659,7 @@ API_GET_ROUTES = {
     "/api/agents": api_agents,
     "/api/pending": api_pending,
     "/api/workers": api_workers,
+    "/api/backlog": api_backlog,
 }
 
 
@@ -648,18 +734,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Not found")
 
+    def _read_json_body(self) -> dict | None:
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return None
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
 
         if path == "/api/decision":
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length))
-            except (json.JSONDecodeError, ValueError):
-                self._send_json({"error": "Invalid JSON"}, 400)
+            body = self._read_json_body()
+            if body is None:
                 return
-
             result = api_decision(body)
+            status = 200 if "ok" in result else 400
+            self._send_json(result, status)
+            return
+
+        if path == "/api/backlog/approve":
+            body = self._read_json_body()
+            if body is None:
+                return
+            result = api_backlog_approve(body)
+            status = 200 if "ok" in result else 400
+            self._send_json(result, status)
+            return
+
+        if path == "/api/backlog/reject":
+            body = self._read_json_body()
+            if body is None:
+                return
+            result = api_backlog_reject(body)
             status = 200 if "ok" in result else 400
             self._send_json(result, status)
             return
@@ -694,7 +802,10 @@ def main():
     print(f"  GET  /api/pending     -> pending decisions")
     print(f"  GET  /api/workers     -> live worker status")
     print(f"  GET  /api/logs/<id>   -> log content for loop run")
+    print(f"  GET  /api/backlog     -> optimization target backlog")
     print(f"  POST /api/decision    -> submit verdict")
+    print(f"  POST /api/backlog/approve -> approve proposed target")
+    print(f"  POST /api/backlog/reject  -> reject proposed target")
 
     try:
         server.serve_forever()

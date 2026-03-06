@@ -35,6 +35,12 @@ done
 
 mkdir -p "$SCRIPT_DIR/run/status" "$SCRIPT_DIR/run/logs"
 
+# Ensure DB exists and backlog is seeded
+DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
+python3 "$REPO_ROOT/tools/perf-dashboard/scripts/init_db.py" --db "$DB_PATH"
+python3 "$SCRIPT_DIR/backlog.py" --db "$DB_PATH" \
+    --targets-file "$REPO_ROOT/docs/perf-ai/OPTIMIZATION-TARGETS.md" seed || true
+
 for i in $(seq 1 "$WORKERS"); do
     SESSION_NAME="perf-dummy-${i}"
 
