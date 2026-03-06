@@ -53,7 +53,14 @@ def main():
             for mig in sorted(os.listdir(migrations_dir)):
                 if mig.endswith(".sql"):
                     with open(os.path.join(migrations_dir, mig)) as mf:
-                        conn.executescript(mf.read())
+                        for statement in mf.read().split(";"):
+                            statement = statement.strip()
+                            if not statement or statement.startswith("--"):
+                                continue
+                            try:
+                                conn.execute(statement)
+                            except sqlite3.OperationalError:
+                                pass  # column/table already exists
 
         conn.commit()
         tables = [row[0] for row in conn.execute(

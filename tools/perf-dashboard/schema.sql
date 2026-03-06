@@ -170,6 +170,11 @@ CREATE TABLE IF NOT EXISTS progress_snapshots (
     -- Noise floor at time of snapshot
     noise_floor_pct   REAL,
 
+    -- Coverage counts
+    total_benchmarks    INTEGER,          -- total in benchmark_registry
+    improved_benchmarks INTEGER,          -- benchmarks with ratio < 1.0
+    touched_benchmarks  INTEGER,          -- benchmarks with at least one merged comparison
+
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

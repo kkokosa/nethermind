@@ -296,6 +296,12 @@ insert_benchmark_data() {
                  $p_value, $is_significant, 0.8,
                  $baseline_ns, $candidate_ns,
                  $baseline_alloc, $candidate_alloc);
+
+            INSERT OR IGNORE INTO benchmark_registry
+                (full_name, short_name, area, weight, is_key_benchmark,
+                 baseline_mean_ns, baseline_alloc)
+            VALUES ('$full_name', '${BENCH_CLASS}.${method}', '$TARGET_AREA',
+                    1.0, 0, $baseline_ns, $baseline_alloc);
         " || log "WARNING: failed to insert benchmark data for $method"
     done
 }
@@ -349,7 +355,17 @@ while true; do
 
     # Derive dependent variables
     TARGET_AREA=$(derive_target_area "$TARGET")
-    HYPOTHESIS="${HYPOTHESES[$TARGET_AREA]:-Optimize hot path in $TARGET}"
+    # Use backlog title+description if available, otherwise fall back to per-area text
+    if $CLAIMED_FROM_BACKLOG; then
+        BACKLOG_TITLE=$(db_query "SELECT title FROM optimization_targets WHERE id='$TARGET'" || echo "")
+        if [ -n "$BACKLOG_TITLE" ]; then
+            HYPOTHESIS="[$TARGET] $BACKLOG_TITLE"
+        else
+            HYPOTHESIS="${HYPOTHESES[$TARGET_AREA]:-Optimize hot path in $TARGET}"
+        fi
+    else
+        HYPOTHESIS="${HYPOTHESES[$TARGET_AREA]:-Optimize hot path in $TARGET}"
+    fi
     BENCH_CLASS="${BENCH_CLASSES[$TARGET_AREA]:-GenericBenchmarks}"
     METHODS="${BENCH_METHODS[$TARGET_AREA]:-Method1 Method2 Method3}"
     BRANCH_NAME="perf-ai/dummy-${TARGET,,}-$(date +%s)"

@@ -13,7 +13,6 @@ import AgentEffectiveness from "./components/AgentEffectiveness";
 import AreaHitRate from "./components/AreaHitRate";
 import FailureAnalysis from "./components/FailureAnalysis";
 import BacklogView from "./components/BacklogView";
-import ActivityLog from "./components/ActivityLog";
 
 export default function Dashboard() {
   const [selectedRun, setSelectedRun] = useState(null);
@@ -47,6 +46,8 @@ export default function Dashboard() {
   const overallHitRate = ((totalMerged / (totalMerged + totalDiscarded)) * 100 || 0).toFixed(0);
   const latestPerfIndex = progressData.length > 0
     ? progressData[progressData.length - 1].perfIndex : 100;
+  const latestTotalBenchmarks = progressData.length > 0
+    ? (progressData[progressData.length - 1].totalBenchmarks || 0) : 0;
   const totalCost = loopRuns.reduce((s, r) => s + (r.cost || 0), 0);
   const costPerImprovement = totalMerged > 0 ? (totalCost / totalMerged).toFixed(2) : "\u2014";
   const noiseFloor = progressData.length > 0
@@ -160,9 +161,16 @@ export default function Dashboard() {
       }}>
         <Card>
           <Stat label="Perf Index" value={latestPerfIndex.toFixed(1)} color={C.green} />
-          <div style={{ fontSize: 10, color: C.green, marginTop: 6 }}>
-            &#x25BC; {(100 - latestPerfIndex).toFixed(1)}% from baseline
+          <div style={{ fontSize: 10, color: latestPerfIndex < 100 ? C.green : C.textDim, marginTop: 6 }}>
+            {latestPerfIndex < 100
+              ? `\u25BC ${(100 - latestPerfIndex).toFixed(1)}% from baseline`
+              : "baseline (100 = fork point)"}
           </div>
+          {latestTotalBenchmarks > 0 && (
+            <div style={{ fontSize: 9, color: C.textDim, marginTop: 2 }}>
+              across {latestTotalBenchmarks} registered benchmarks
+            </div>
+          )}
         </Card>
         <Card>
           <Stat label="Loops Total" value={loopRuns.length} color={C.textBright} />
@@ -218,7 +226,6 @@ export default function Dashboard() {
           <AreaHitRate areas={AREA_EFFECTIVENESS} />
           <FailureAnalysis failures={FAILURE_TAXONOMY} totalDiscarded={totalDiscarded} />
           <BacklogView />
-          <ActivityLog progress={progressData} />
         </div>
       </div>
 

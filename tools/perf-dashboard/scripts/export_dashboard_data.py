@@ -76,6 +76,9 @@ def export_progress(conn: sqlite3.Connection, output_dir: str):
             "bpIndex": d["bp_index"],
             "noiseFloor": d["noise_floor_pct"],
             "triggerLoopId": d["trigger_loop_id"],
+            "totalBenchmarks": d.get("total_benchmarks", 0),
+            "improvedBenchmarks": d.get("improved_benchmarks", 0),
+            "touchedBenchmarks": d.get("touched_benchmarks", 0),
         })
 
     path = os.path.join(output_dir, "progress.json")

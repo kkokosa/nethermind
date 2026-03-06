@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: cleanup.sh [--force] [--dry-run] [--reset-db] [--port N]"
             echo "  --force     Remove everything without prompting"
             echo "  --dry-run   Show what would be cleaned, don't touch anything"
-            echo "  --reset-db  Wipe all loop_runs, comparisons, benchmark_results, and optimization_targets"
+            echo "  --reset-db  Wipe all data tables (loop_runs, comparisons, benchmark_results, optimization_targets, progress_snapshots, benchmark_registry, null_runs)"
             echo "  --port N    Dashboard port to check for ghost processes (default: 4040)"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
@@ -224,19 +224,19 @@ if $RESET_DB && [ -f "$DB_PATH" ]; then
 
     WIPE=false
     if $DRY_RUN; then
-        echo "  [dry-run] Would delete all loop_runs, comparisons, benchmark_results, optimization_targets"
+        echo "  [dry-run] Would delete all data tables"
     elif $FORCE; then
         WIPE=true
     else
-        read -rp "  Wipe all loop_runs, comparisons, benchmark_results, and optimization_targets? [y/N] " answer
+        read -rp "  Wipe all data tables (loop_runs, benchmarks, progress, registry, targets)? [y/N] " answer
         case "$answer" in
             [yY]|[yY][eE][sS]) WIPE=true ;;
         esac
     fi
 
     if $WIPE && ! $DRY_RUN; then
-        sqlite3 "$DB_PATH" "DELETE FROM comparisons; DELETE FROM benchmark_results; DELETE FROM loop_runs; DELETE FROM optimization_targets;"
-        echo "  Wiped loop_runs, comparisons, benchmark_results, optimization_targets"
+        sqlite3 "$DB_PATH" "DELETE FROM comparisons; DELETE FROM benchmark_results; DELETE FROM loop_runs; DELETE FROM optimization_targets; DELETE FROM progress_snapshots; DELETE FROM benchmark_registry; DELETE FROM null_runs;"
+        echo "  Wiped loop_runs, comparisons, benchmark_results, optimization_targets, progress_snapshots, benchmark_registry, null_runs"
     fi
     echo ""
 fi

@@ -44,6 +44,57 @@ def compute_cohen_d(b_mean, b_std, c_mean, c_std):
     return (b_mean - c_mean) / pooled_std
 
 
+NAMESPACE_AREA_MAP = {
+    "Nethermind.Evm.Benchmark": "evm",
+    "Nethermind.Benchmarks.Evm": "evm",
+    "Nethermind.Precompiles.Benchmark": "evm",
+    "Nethermind.EthereumTests.Benchmark": "evm",
+    "Nethermind.Trie.Benchmark": "trie",
+    "Nethermind.Benchmarks.Trie": "trie",
+    "Nethermind.Benchmarks.State": "state",
+    "Nethermind.Benchmarks.Rlp": "rlp",
+    "Nethermind.JsonRpc.Benchmark": "jsonrpc",
+    "Nethermind.Network.Benchmark": "network",
+    "Nethermind.Benchmarks.Core": "core",
+    "Nethermind.Benchmarks.Mining": "core",
+    "Nethermind.Benchmarks.Store": "db",
+}
+
+
+def _derive_area(full_name):
+    name = full_name.split("(")[0]
+    parts = name.split(".")
+    for length in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:length])
+        if prefix in NAMESPACE_AREA_MAP:
+            return NAMESPACE_AREA_MAP[prefix]
+    lower = full_name.lower()
+    for kw, area in [("evm", "evm"), ("trie", "trie"), ("state", "state"),
+                     ("rlp", "rlp"), ("db", "db"), ("rocks", "db"),
+                     ("block", "bp"), ("network", "network")]:
+        if kw in lower:
+            return area
+    return "other"
+
+
+def _auto_register(conn, full_name, baseline_mean_ns, baseline_alloc):
+    parts = full_name.split("(")[0].rsplit(".", 2)
+    if len(parts) >= 2:
+        short = f"{parts[-2]}.{parts[-1]}"
+    else:
+        short = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
+    area = _derive_area(full_name)
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO benchmark_registry
+                (full_name, short_name, area, weight, is_key_benchmark,
+                 baseline_mean_ns, baseline_alloc)
+            VALUES (?, ?, ?, 1.0, 0, ?, ?)
+        """, (full_name, short, area, baseline_mean_ns, baseline_alloc))
+    except sqlite3.OperationalError:
+        pass  # table may not exist
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compare baseline vs candidate benchmark results")
     parser.add_argument("--loop-run", required=True, help="Loop run ID")
@@ -164,6 +215,8 @@ def main():
             """, (args.loop_run, full_name, delta_mean_pct, delta_alloc_pct,
                   p_value, is_significant, effect_size, ci_lower, ci_upper,
                   b_mean, c_mean, b_alloc, c_alloc))
+
+            _auto_register(conn, full_name, b_mean, b_alloc)
 
         conn.commit()
 

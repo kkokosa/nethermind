@@ -21,6 +21,7 @@ Endpoints:
 
 import http.server
 import json
+import math
 import mimetypes
 import os
 import sqlite3
@@ -115,18 +116,26 @@ def api_progress() -> list[dict]:
     conn = get_db()
     try:
         cursor = conn.execute("SELECT * FROM progress_snapshots ORDER BY snapshot_date")
-        return [{
-            "date": r["snapshot_date"],
-            "perfIndex": r["perf_index"],
-            "evmIndex": r["evm_index"],
-            "trieIndex": r["trie_index"],
-            "stateIndex": r["state_index"],
-            "rlpIndex": r["rlp_index"],
-            "dbIndex": r["db_index"],
-            "bpIndex": r["bp_index"],
-            "noiseFloor": r["noise_floor_pct"],
-            "triggerLoopId": r["trigger_loop_id"],
-        } for r in cursor.fetchall()]
+        cols = [d[0] for d in cursor.description]
+        results = []
+        for r in cursor.fetchall():
+            d = dict(zip(cols, r))
+            results.append({
+                "date": d["snapshot_date"],
+                "perfIndex": d["perf_index"],
+                "evmIndex": d.get("evm_index"),
+                "trieIndex": d.get("trie_index"),
+                "stateIndex": d.get("state_index"),
+                "rlpIndex": d.get("rlp_index"),
+                "dbIndex": d.get("db_index"),
+                "bpIndex": d.get("bp_index"),
+                "noiseFloor": d.get("noise_floor_pct"),
+                "triggerLoopId": d.get("trigger_loop_id"),
+                "totalBenchmarks": d.get("total_benchmarks", 0),
+                "improvedBenchmarks": d.get("improved_benchmarks", 0),
+                "touchedBenchmarks": d.get("touched_benchmarks", 0),
+            })
+        return results
     finally:
         conn.close()
 
@@ -404,6 +413,140 @@ def api_backlog_reject(body: dict) -> dict:
         conn.close()
 
 
+# ── Progress snapshot computation ────────────────────────────────────────────
+
+AREA_LIST = ["evm", "trie", "state", "rlp", "db", "bp"]
+
+
+def _ensure_progress_columns(conn):
+    """Add coverage count columns if missing (migration for existing DBs)."""
+    try:
+        conn.execute("SELECT total_benchmarks FROM progress_snapshots LIMIT 1")
+    except sqlite3.OperationalError:
+        for col in ["total_benchmarks", "improved_benchmarks", "touched_benchmarks"]:
+            try:
+                conn.execute(f"ALTER TABLE progress_snapshots ADD COLUMN {col} INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
+
+def _weighted_geometric_mean(items):
+    """Compute weighted geometric mean of (weight, ratio) pairs."""
+    if not items:
+        return 1.0
+    total_weight = sum(w for w, _ in items)
+    if total_weight == 0:
+        return 1.0
+    log_sum = sum(w * math.log(r) for w, r in items if r > 0)
+    return math.exp(log_sum / total_weight)
+
+
+def _insert_progress_snapshot(conn, trigger_loop_id: str):
+    """
+    Coverage-weighted performance index using benchmark_registry.
+
+    Every registered benchmark participates. Untouched ones have ratio=1.0.
+    Index = geometric_mean(all ratios) * 100.
+    With 100 benchmarks and 3 improved by -20%: (0.8^3 * 1.0^97)^(1/100) * 100 ~ 99.3
+    """
+    try:
+        _ensure_progress_columns(conn)
+
+        # Get all registered benchmarks with positive baselines
+        registry = conn.execute("""
+            SELECT full_name, area, weight, baseline_mean_ns
+            FROM benchmark_registry
+            WHERE baseline_mean_ns > 0
+        """).fetchall()
+
+        if not registry:
+            # Fallback: no registry yet, insert baseline snapshot
+            conn.execute("""
+                INSERT INTO progress_snapshots
+                    (snapshot_date, trigger_loop_id, perf_index,
+                     evm_index, trie_index, state_index, rlp_index, db_index, bp_index,
+                     noise_floor_pct, total_benchmarks, improved_benchmarks, touched_benchmarks)
+                VALUES (datetime('now'), ?, 100.0, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0)
+            """, (trigger_loop_id,))
+            conn.commit()
+            return
+
+        # Build latest candidate_mean_ns per benchmark from merged+significant comparisons
+        merged_rows = conn.execute("""
+            SELECT c.full_name, c.candidate_mean_ns
+            FROM comparisons c
+            JOIN loop_runs lr ON c.loop_run_id = lr.id
+            WHERE lr.status = 'done' AND lr.verdict = 'improvement'
+              AND c.is_significant = 1 AND c.candidate_mean_ns IS NOT NULL
+            ORDER BY lr.updated_at ASC
+        """).fetchall()
+
+        latest_candidate = {}
+        for r in merged_rows:
+            latest_candidate[r["full_name"]] = r["candidate_mean_ns"]
+
+        # Compute ratios
+        all_items = []  # (weight, ratio) for overall
+        area_items = {a: [] for a in AREA_LIST}
+        touched_count = 0
+        improved_count = 0
+
+        for reg in registry:
+            full_name = reg["full_name"]
+            weight = reg["weight"] or 1.0
+            baseline = reg["baseline_mean_ns"]
+            area = reg["area"]
+
+            if full_name in latest_candidate:
+                ratio = latest_candidate[full_name] / baseline
+                touched_count += 1
+                if ratio < 1.0:
+                    improved_count += 1
+            else:
+                ratio = 1.0  # untouched
+
+            all_items.append((weight, ratio))
+            if area in area_items:
+                area_items[area].append((weight, ratio))
+
+        overall = _weighted_geometric_mean(all_items) * 100.0
+        area_indices = {}
+        for area in AREA_LIST:
+            if area_items[area]:
+                area_indices[area] = _weighted_geometric_mean(area_items[area]) * 100.0
+            else:
+                area_indices[area] = None
+
+        # Get noise floor from latest null runs
+        nf_row = conn.execute(
+            "SELECT AVG(ABS(delta_mean_pct)) as nf FROM null_runs"
+        ).fetchone()
+        noise_floor = nf_row["nf"] if nf_row and nf_row["nf"] else 0.0
+
+        total_benchmarks = len(registry)
+
+        conn.execute("""
+            INSERT INTO progress_snapshots
+                (snapshot_date, trigger_loop_id, perf_index,
+                 evm_index, trie_index, state_index, rlp_index, db_index, bp_index,
+                 noise_floor_pct, total_benchmarks, improved_benchmarks, touched_benchmarks)
+            VALUES (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trigger_loop_id, round(overall, 2),
+            round(area_indices["evm"], 2) if area_indices["evm"] is not None else None,
+            round(area_indices["trie"], 2) if area_indices["trie"] is not None else None,
+            round(area_indices["state"], 2) if area_indices["state"] is not None else None,
+            round(area_indices["rlp"], 2) if area_indices["rlp"] is not None else None,
+            round(area_indices["db"], 2) if area_indices["db"] is not None else None,
+            round(area_indices["bp"], 2) if area_indices["bp"] is not None else None,
+            round(noise_floor, 2),
+            total_benchmarks, improved_count, touched_count,
+        ))
+        conn.commit()
+    except Exception as e:
+        print(f"[warning] Failed to insert progress snapshot: {e}")
+
+
 # ── API: POST /api/decision ──────────────────────────────────────────────────
 
 def api_decision(body: dict) -> dict:
@@ -483,6 +626,10 @@ def api_decision(body: dict) -> dict:
             pass  # Table may not exist yet
 
         conn.commit()
+
+        # ── On approve: compute progress snapshot ──
+        if verdict == "improvement":
+            _insert_progress_snapshot(conn, loop_run_id)
 
         result = {
             "ok": True,
