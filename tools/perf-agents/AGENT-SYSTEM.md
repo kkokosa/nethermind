@@ -353,6 +353,40 @@ python3 orchestrate.py --dry-run --workers 3
 python3 orchestrate.py --dry-run --workers 3 --exclude "EVM-1,TRIE-2"
 ```
 
+## Validation Layers
+
+The agent loop has three validation layers beyond microbenchmarks:
+
+### Layer 1: Correctness Gate (automated, blocks progress)
+
+After implementation, `run-correctness-check.sh` runs targeted unit tests for the
+affected area (EVM -> Nethermind.Evm.Test, TRIE -> Nethermind.Trie.Test, etc.).
+Added as backpressure gate #4 in `implement.md`. If tests fail, the attempt is
+marked as error and skipped.
+
+### Layer 2: Block Processing Benchmark (automated, alongside micro-BDN)
+
+`BlockProcessingBenchmark` (9 scenarios: EmptyBlock through MixedBlock) runs on
+both baseline and candidate as part of the implement session. Results flow into
+the comparisons table and are displayed separately in pending decisions.
+This validates that micro-level gains translate to real block processing speedup.
+
+### Layer 3: EXPB Real Payload Replay (human-triggered)
+
+For promising changes, humans can trigger local EXPB via the dashboard
+("Run EXPB" button or `POST /api/trigger-expb`). This builds Docker images
+for baseline and candidate, then replays real mainnet blocks through the
+full client via Engine API. Results show per-payload processing_ms comparison.
+
+Scripts:
+- `setup-expb.sh` — one-time setup (installs expb via uv)
+- `run-expb-local.sh` — runs EXPB for a branch vs baseline
+- `expb-local.yaml` — config template for local runs
+
+API endpoints:
+- `POST /api/trigger-expb` — start EXPB run (body: `{"loopRunId": "LR-001"}`)
+- `GET /api/expb-status/<id>` — poll EXPB run status and results
+
 ## Directory Structure
 
 ```
@@ -365,13 +399,19 @@ tools/perf-agents/
 ├── worker.sh                   # Generic worker (claims target, runs loop)
 ├── claim_target.py             # Atomic target claim from SQLite
 ├── decision-server.py          # HTTP server (dashboard + API + decision)
+├── run-correctness-check.sh    # Layer 1: targeted unit tests per area
+├── run-block-benchmark.sh      # Layer 2: BlockProcessingBenchmark wrapper
+├── setup-expb.sh               # Layer 3: one-time EXPB setup
+├── run-expb-local.sh           # Layer 3: local EXPB execution
+├── expb-local.yaml             # Layer 3: EXPB config template
 ├── PROMPTS/
 │   ├── research.md             # Phase 1-2 prompt
-│   └── implement.md            # Phase 3-5 prompt
+│   └── implement.md            # Phase 3-5 prompt (includes correctness + BP gates)
 ├── run/                        # Runtime (gitignored)
 │   ├── benchmark.lock
 │   ├── logs/*.log
-│   └── status/*.json
+│   ├── status/*.json
+│   └── expb-results/           # EXPB run outputs
 └── AGENT-SYSTEM.md             # This file
 
 .claude/

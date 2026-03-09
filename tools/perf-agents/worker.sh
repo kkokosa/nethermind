@@ -258,6 +258,15 @@ sqlite3 "$DB_PATH" \
 # Create loop state dir inside worktree
 mkdir -p "$WORKTREE_DIR/$LOOP_STATE_DIR"
 
+# Initialize EF test submodule if not present (needed for correctness checks)
+if [ ! -f "$WORKTREE_DIR/src/tests/.git" ] && [ ! -d "$WORKTREE_DIR/src/tests/.git" ]; then
+    log "Initializing EF test submodule..."
+    cd "$WORKTREE_DIR"
+    git submodule update --init src/tests 2>/dev/null || \
+        log "WARNING: Could not init EF test submodule (non-fatal)"
+    cd "$REPO_ROOT"
+fi
+
 # Create sandbox settings inside worktree (only affects Claude sessions here)
 mkdir -p "$WORKTREE_DIR/.claude"
 cat > "$WORKTREE_DIR/.claude/settings.json" << 'SANDBOX_EOF'
@@ -268,7 +277,7 @@ cat > "$WORKTREE_DIR/.claude/settings.json" << 'SANDBOX_EOF'
       "Agent", "WebFetch", "WebSearch", "ToolSearch",
       "TaskOutput", "TodoWrite",
       "Bash(dotnet:*)", "Bash(git:*)", "Bash(sqlite3:*)",
-      "Bash(python3:*)", "Bash(ls:*)", "Bash(cat:*)",
+      "Bash(python3:*)", "Bash(bash:*)", "Bash(ls:*)", "Bash(cat:*)",
       "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
       "Bash(find:*)", "Bash(grep:*)", "Bash(rg:*)",
       "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
@@ -360,6 +369,23 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     accumulate_cost "$IMPL_LOG"
 
     release_benchmark_lock
+
+    # ── Correctness check ──
+    CORRECTNESS_RESULT="$WORKTREE_DIR/$LOOP_STATE_DIR/correctness-result.json"
+    if [ -f "$CORRECTNESS_RESULT" ]; then
+        CORRECTNESS_STATUS=$("$PYTHON" -c "import sys,json; print(json.load(open('$CORRECTNESS_RESULT'))['result'])" 2>/dev/null || echo "unknown")
+        if [ "$CORRECTNESS_STATUS" = "fail" ]; then
+            log "CORRECTNESS CHECK FAILED — skipping benchmark evaluation"
+            update_status "error" ", approach='Attempt $CURRENT_ATTEMPT: correctness check failed'" \
+                "Attempt $CURRENT_ATTEMPT failed — correctness tests failed"
+            cd "$WORKTREE_DIR"
+            git add -A && git commit -m "perf(${TARGET_ID}): attempt ${CURRENT_ATTEMPT} — correctness failed [${LOOP_RUN_ID}]" || true
+            git push origin "$BRANCH_NAME" || true
+            cd "$REPO_ROOT"
+            continue
+        fi
+        log "Correctness check: $CORRECTNESS_STATUS"
+    fi
 
     # ── Check if results exist ──
     COMPARISON_COUNT=$(sqlite3 "$DB_PATH" \

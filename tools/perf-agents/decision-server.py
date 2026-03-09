@@ -27,6 +27,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import urllib.parse
 from pathlib import Path
 
@@ -318,6 +319,29 @@ def api_pending() -> list[dict]:
                     d["diff_stat"] = diff_stat
                 except (subprocess.SubprocessError, FileNotFoundError):
                     d["diff_stat"] = ""
+
+            # Correctness check result
+            for dirname in [d.get("worktree_path", ""), str(REPO_ROOT)]:
+                if not dirname:
+                    continue
+                cr_path = Path(dirname) / "loop-state" / d["id"] / "correctness-result.json"
+                if cr_path.exists() and "correctness" not in d:
+                    try:
+                        d["correctness"] = json.loads(cr_path.read_text(errors="replace"))
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+            # Block processing benchmark comparisons (separate from micro)
+            bp_comparisons = conn.execute("""
+                SELECT full_name, delta_mean_pct, baseline_mean_ns, candidate_mean_ns
+                FROM comparisons
+                WHERE loop_run_id = ? AND full_name LIKE '%BlockProcessingBenchmark%'
+                ORDER BY ABS(delta_mean_pct) DESC
+            """, (d["id"],)).fetchall()
+            d["bp_comparisons"] = [dict(c) for c in bp_comparisons]
+
+            # EXPB status
+            d["expb_status"] = api_expb_status(d["id"])
 
             results.append(d)
 
@@ -746,6 +770,89 @@ def _gh_available() -> bool:
         return False
 
 
+# ── EXPB (real payload replay) ──────────────────────────────────────────────
+
+# In-memory tracking of EXPB runs (not persisted — server restart clears)
+_expb_runs: dict[str, dict] = {}
+_expb_lock = threading.Lock()
+
+
+def api_trigger_expb(body: dict) -> dict:
+    """Trigger a local EXPB run for a loop run. Runs in background."""
+    loop_run_id = body.get("loopRunId", "")
+    if not loop_run_id:
+        return {"error": "loopRunId is required"}
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT branch, target_id FROM loop_runs WHERE id = ?",
+            (loop_run_id,)
+        ).fetchone()
+        if not row:
+            return {"error": f"Loop run {loop_run_id} not found"}
+        branch = row["branch"]
+        if not branch:
+            return {"error": "No branch associated with this loop run"}
+    finally:
+        conn.close()
+
+    with _expb_lock:
+        if loop_run_id in _expb_runs and _expb_runs[loop_run_id].get("status") == "running":
+            return {"error": "EXPB already running for this loop run"}
+        _expb_runs[loop_run_id] = {"status": "running", "branch": branch, "started_at": "now"}
+
+    def _run_expb():
+        try:
+            result = subprocess.run(
+                [str(SCRIPT_DIR / "run-expb-local.sh"), branch, "perf-ai/setup", loop_run_id],
+                cwd=str(REPO_ROOT),
+                timeout=1800,  # 30 min max
+                capture_output=True, text=True,
+            )
+            results_file = SCRIPT_DIR / "run" / "expb-results" / loop_run_id / "expb-results.json"
+            with _expb_lock:
+                if results_file.exists():
+                    _expb_runs[loop_run_id] = {
+                        "status": "complete",
+                        "branch": branch,
+                        "results": json.loads(results_file.read_text()),
+                    }
+                else:
+                    _expb_runs[loop_run_id] = {
+                        "status": "failed",
+                        "branch": branch,
+                        "error": result.stderr[-500:] if result.stderr else "No results file",
+                    }
+        except subprocess.TimeoutExpired:
+            with _expb_lock:
+                _expb_runs[loop_run_id] = {"status": "timeout", "branch": branch}
+        except Exception as e:
+            with _expb_lock:
+                _expb_runs[loop_run_id] = {"status": "error", "branch": branch, "error": str(e)[:500]}
+
+    thread = threading.Thread(target=_run_expb, daemon=True)
+    thread.start()
+    return {"ok": True, "loopRunId": loop_run_id, "status": "running"}
+
+
+def api_expb_status(loop_run_id: str) -> dict:
+    """Get EXPB run status for a loop run."""
+    with _expb_lock:
+        if loop_run_id in _expb_runs:
+            return _expb_runs[loop_run_id]
+
+    # Check for results on disk from a previous server session
+    results_file = SCRIPT_DIR / "run" / "expb-results" / loop_run_id / "expb-results.json"
+    if results_file.exists():
+        try:
+            return {"status": "complete", "results": json.loads(results_file.read_text())}
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return {"status": "not_started"}
+
+
 # ── Logs API ──────────────────────────────────────────────────────────────────
 
 def api_logs(loop_run_id: str, tail: int = 0) -> dict:
@@ -855,6 +962,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, 500)
             return
 
+        # Dynamic route: /api/expb-status/<loop_run_id>
+        if path.startswith("/api/expb-status/"):
+            loop_run_id = path[len("/api/expb-status/"):].split("/")[0]
+            if loop_run_id:
+                try:
+                    self._send_json(api_expb_status(loop_run_id))
+                except Exception as e:
+                    self._send_json({"error": str(e)}, 500)
+                return
+
         # Dynamic route: /api/logs/<loop_run_id>
         if path.startswith("/api/logs/"):
             parts = path[len("/api/logs/"):].split("/")
@@ -910,6 +1027,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(result, status)
             return
 
+        if path == "/api/trigger-expb":
+            body = self._read_json_body()
+            if body is None:
+                return
+            result = api_trigger_expb(body)
+            status = 200 if "ok" in result else 400
+            self._send_json(result, status)
+            return
+
         if path == "/api/backlog/reject":
             body = self._read_json_body()
             if body is None:
@@ -951,6 +1077,8 @@ def main():
     print(f"  GET  /api/logs/<id>   -> log content for loop run")
     print(f"  GET  /api/backlog     -> optimization target backlog")
     print(f"  POST /api/decision    -> submit verdict")
+    print(f"  POST /api/trigger-expb -> trigger local EXPB replay")
+    print(f"  GET  /api/expb-status/<id> -> EXPB run status")
     print(f"  POST /api/backlog/approve -> approve proposed target")
     print(f"  POST /api/backlog/reject  -> reject proposed target")
 

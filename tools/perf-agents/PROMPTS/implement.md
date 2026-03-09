@@ -97,18 +97,52 @@ cd "${WORKTREE_DIR}"
 git worktree remove "$BASELINE_WT" --force
 ```
 
-### 4.3 Ingest results into SQLite
+### 4.3 Block Processing Benchmark (required)
+
+In addition to the targeted micro-benchmark, ALWAYS run `BlockProcessingBenchmark`
+on both baseline and candidate. This validates that micro-level optimizations
+translate to real block processing improvement.
+
+On candidate (this branch, after the targeted benchmark):
 
 ```bash
-# Ingest baseline
+dotnet run -c Release --no-build --project src/Nethermind/Nethermind.Evm.Benchmark/ \
+  -- --filter "*BlockProcessingBenchmark*" --exporters json
+mkdir -p ${LOOP_STATE_DIR}/candidate-bp-results
+cp BenchmarkDotNet.Artifacts/results/*BlockProcessing*.json \
+  ${LOOP_STATE_DIR}/candidate-bp-results/
+```
+
+On baseline (in the baseline worktree, after the targeted benchmark):
+
+```bash
+cd "$BASELINE_WT"
+dotnet run -c Release --no-build --project src/Nethermind/Nethermind.Evm.Benchmark/ \
+  -- --filter "*BlockProcessingBenchmark*" --exporters json
+cp BenchmarkDotNet.Artifacts/results/*BlockProcessing*.json \
+  ${WORKTREE_DIR}/${LOOP_STATE_DIR}/baseline-bp-results/
+```
+
+### 4.4 Ingest results into SQLite
+
+```bash
+# Ingest baseline (targeted + BP)
 python tools/perf-dashboard/scripts/ingest.py \
   --loop-run ${LOOP_RUN_ID} --side baseline \
   --bdn-json "${LOOP_STATE_DIR}/baseline-results/"*.json
 
-# Ingest candidate
+python tools/perf-dashboard/scripts/ingest.py \
+  --loop-run ${LOOP_RUN_ID} --side baseline \
+  --bdn-json "${LOOP_STATE_DIR}/baseline-bp-results/"*.json
+
+# Ingest candidate (targeted + BP)
 python tools/perf-dashboard/scripts/ingest.py \
   --loop-run ${LOOP_RUN_ID} --side candidate \
   --bdn-json "${LOOP_STATE_DIR}/candidate-results/"*.json
+
+python tools/perf-dashboard/scripts/ingest.py \
+  --loop-run ${LOOP_RUN_ID} --side candidate \
+  --bdn-json "${LOOP_STATE_DIR}/candidate-bp-results/"*.json
 ```
 
 ## Phase 5: Measure
@@ -133,6 +167,13 @@ Create `${LOOP_STATE_DIR}/measurement-report.md`:
 | Benchmark | Baseline | Candidate | Δ Mean | Δ Alloc |
 |-----------|----------|-----------|--------|---------|
 | ... | ... | ... | ... | ... |
+
+## Block Processing Impact
+| BP Scenario | Baseline | Candidate | Δ Mean |
+|-------------|----------|-----------|--------|
+| MixedBlock  | ...      | ...       | ...    |
+| Transfers_200 | ...   | ...       | ...    |
+[If BP shows regression > 2%, note prominently]
 
 ## Adjacent Benchmarks
 [Any regressions in nearby methods?]
@@ -168,8 +209,11 @@ git commit -m "perf(${TARGET_ID}): attempt ${ATTEMPT_NUMBER} — [result summary
 1. `dotnet build -c Release` — compiles
 2. `dotnet test` — existing tests pass
 3. `dotnet format whitespace` — formatted
-4. BenchmarkDotNet — both baseline and candidate complete
-5. `compare.py` — comparison produces results
+4. Correctness check — run `bash ../../tools/perf-agents/run-correctness-check.sh ${TARGET_ID}`.
+   If it fails, stop and report in `measurement-report.md`.
+5. BenchmarkDotNet — both targeted micro-benchmark and BlockProcessingBenchmark
+   on baseline and candidate complete
+6. `compare.py` — comparison produces results
 
 If any gate fails, fix before proceeding.
 

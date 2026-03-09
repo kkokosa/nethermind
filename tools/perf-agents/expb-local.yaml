@@ -1,0 +1,18 @@
+# EXPB local benchmark config
+# Used by run-expb-local.sh for real-payload validation
+#
+# This template is rendered by run-expb-local.sh which replaces:
+#   <<DOCKER_TAG>> with the actual image tag
+#   <<DELAY>> with the inter-payload delay
+
+scenarios:
+  nethermind:
+    client: nethermind
+    docker_image: "nethermind-perf:<<DOCKER_TAG>>"
+    extra_flags: []
+    delay: <<DELAY>>
+
+# Payload set — uses a small local set for quick validation
+# Override with EXPB_PAYLOAD_SET env var
+payload_set: "halfpath"
+mode: "halfpath"
