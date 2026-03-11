@@ -1,0 +1,22 @@
+[
+  {
+    "area": "evm",
+    "title": "Span-based state lookups for BALANCE/EXTCODEHASH/EXTCODESIZE (EvmInstructions.Environment.cs:556,620,668)",
+    "description": "BALANCE, EXTCODEHASH, and EXTCODESIZE pop an address only to do a read-only state lookup and push a result. They never store the Address object beyond the function scope. If IWorldState and StateProvider exposed span-based overloads (e.g. GetBalance(ReadOnlySpan<byte>)), these opcodes could avoid creating Address objects entirely. StateProvider.GetThroughCache uses Dictionary<AddressAsKey,...> which in .NET 9+ supports AlternateLookup for span-based keys. This would eliminate ~80 bytes of allocation per opcode invocation. File refs: EvmInstructions.Environment.cs:556 (BALANCE), :620 (EXTCODEHASH), :668 (EXTCODEHASH EOF). Downstream: StateProvider.cs:112 (GetBalance), WorldState.cs:268 (GetBalance), StackAccessTracker.cs:30 (IsCold).",
+    "difficulty": "L",
+    "impact": "high",
+    "confidence": 0.5,
+    "parent_id": "EVM-1",
+    "related_targets": ["EVM-1"]
+  },
+  {
+    "area": "evm",
+    "title": "Address constructor from Hash256 double-allocates via ToArray() (Address.cs:38,40)",
+    "description": "Address(Hash256) at Address.cs:38 and Address(ValueHash256) at Address.cs:40 both slice 20 bytes from a 32-byte hash and call .ToArray(). These are used in address derivation paths (CREATE, CREATE2, tx sender recovery). The slice+ToArray pattern allocates a temporary byte[] that becomes the Address backing store. Unlike PopAddress (which must copy from ephemeral stack memory), the Hash256.Bytes is a stable byte[] — we could use Unsafe.As or a shared buffer to avoid the intermediate allocation. However, these paths are less hot than PopAddress (per-CREATE, not per-CALL).",
+    "difficulty": "S",
+    "impact": "low",
+    "confidence": 0.4,
+    "parent_id": "EVM-1",
+    "related_targets": ["EVM-1"]
+  }
+]
