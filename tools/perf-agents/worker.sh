@@ -16,6 +16,7 @@ set -euo pipefail
 #   ./tools/perf-agents/worker.sh                   # claim best target
 #   ./tools/perf-agents/worker.sh --target EVM-1    # force specific target
 #   ./tools/perf-agents/worker.sh --exclude EVM-1,TRIE-2
+#   ./tools/perf-agents/worker.sh --dry-run         # skip Claude Code + benchmarks, test pipeline
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,6 +36,7 @@ fi
 MAX_ATTEMPTS=3
 MAX_TURNS=50
 DECISION_POLL_INTERVAL=30
+DRY_RUN=false
 
 # ─── Parse args ──────────────────────────────────────────────────────────────
 
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)   CLAIM_ARGS="$CLAIM_ARGS --target $2"; shift 2 ;;
         --exclude)  CLAIM_ARGS="$CLAIM_ARGS --exclude $2"; shift 2 ;;
+        --dry-run)  DRY_RUN=true; shift ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
 done
@@ -315,9 +318,28 @@ write_live_status "research" "Worktree created, starting research"
 log "Phase 1-2: Research + Hypothesize"
 update_status "research" "" "Running Claude Code for research..."
 
-RESEARCH_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-research.log"
-run_claude "$PROMPTS_DIR/research.md" "$RESEARCH_LOG" "$WORKTREE_DIR"
-accumulate_cost "$RESEARCH_LOG"
+if $DRY_RUN; then
+    log "[DRY-RUN] Skipping Claude Code research — generating stub artifacts"
+    sleep 2  # brief pause for realism in dashboard
+    cat > "$WORKTREE_DIR/$LOOP_STATE_DIR/hypothesis.md" << 'STUB_EOF'
+# Hypothesis (dry-run)
+
+This is a dry-run stub. No actual research was performed.
+
+## Target
+${TARGET_ID}
+
+## Proposed Change
+No-op for pipeline testing.
+
+## Expected Impact
+0% (dry-run mode)
+STUB_EOF
+else
+    RESEARCH_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-research.log"
+    run_claude "$PROMPTS_DIR/research.md" "$RESEARCH_LOG" "$WORKTREE_DIR"
+    accumulate_cost "$RESEARCH_LOG"
+fi
 
 # Verify output
 if [ ! -f "$WORKTREE_DIR/$LOOP_STATE_DIR/hypothesis.md" ]; then
@@ -359,18 +381,45 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     log "Phase 3-5: Attempt $CURRENT_ATTEMPT/$MAX_ATTEMPTS"
     update_status "implementing" "" "Attempt $CURRENT_ATTEMPT — implementing..."
 
-    # ── Benchmark lock: hold during entire implement session ──
-    # Claude Code will run benchmarks as part of this session.
-    # The lock ensures no other worker benchmarks simultaneously.
-    acquire_benchmark_lock
+    if $DRY_RUN; then
+        # ── Dry-run: skip Claude Code + benchmarks, insert fake 0% comparison ──
+        log "[DRY-RUN] Skipping Claude Code + benchmarks for attempt $CURRENT_ATTEMPT"
+        sleep 2
 
-    IMPL_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-impl-${CURRENT_ATTEMPT}.log"
-    run_claude "$PROMPTS_DIR/implement.md" "$IMPL_LOG" "$WORKTREE_DIR"
-    accumulate_cost "$IMPL_LOG"
+        # Create stub benchmark summary (no code changes, no real benchmarks)
+        cat > "$WORKTREE_DIR/$LOOP_STATE_DIR/benchmark-summary.md" << 'STUB_EOF'
+# Benchmark Summary (dry-run)
 
-    release_benchmark_lock
+No benchmarks were executed. This is a pipeline test run.
 
-    # ── Correctness check ──
+| Metric | Baseline | Optimized | Delta |
+|--------|----------|-----------|-------|
+| N/A    | N/A      | N/A       | 0%    |
+STUB_EOF
+
+        # Insert a fake comparison row so evaluation logic has data
+        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO comparisons (
+            loop_run_id, full_name, baseline_mean_ns, candidate_mean_ns,
+            delta_mean_pct, is_significant, computed_at
+        ) VALUES (
+            '$LOOP_RUN_ID', 'dry-run-stub', 1000000, 1000000,
+            0.0, 0, datetime('now')
+        )" 2>/dev/null || true
+    else
+        # ── Real mode: Claude Code + benchmarks ──
+        # Benchmark lock: hold during entire implement session.
+        # Claude Code will run benchmarks as part of this session.
+        # The lock ensures no other worker benchmarks simultaneously.
+        acquire_benchmark_lock
+
+        IMPL_LOG="$RUN_DIR/logs/${LOOP_RUN_ID}-impl-${CURRENT_ATTEMPT}.log"
+        run_claude "$PROMPTS_DIR/implement.md" "$IMPL_LOG" "$WORKTREE_DIR"
+        accumulate_cost "$IMPL_LOG"
+
+        release_benchmark_lock
+    fi
+
+    # ── Correctness check (runs in both real and dry-run mode) ──
     CORRECTNESS_RESULT="$WORKTREE_DIR/$LOOP_STATE_DIR/correctness-result.json"
     if [ -f "$CORRECTNESS_RESULT" ]; then
         CORRECTNESS_STATUS=$("$PYTHON" -c "import sys,json; print(json.load(open('$CORRECTNESS_RESULT'))['result'])" 2>/dev/null || echo "unknown")
@@ -421,6 +470,22 @@ for CURRENT_ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
         2>/dev/null || echo "0")
 
     log "Results: best_delta=${BEST_DELTA:-none}, regressions=$REGRESSIONS"
+
+    # In dry-run mode, skip the improvement threshold — go straight to pending_decision
+    if $DRY_RUN; then
+        log "[DRY-RUN] Skipping improvement threshold — requesting human decision (0% delta)"
+        update_status "pending_decision" \
+            ", approach='dry-run: no code changes, 0% delta'" \
+            "Waiting for human review (dry-run, 0% delta)"
+
+        cd "$WORKTREE_DIR"
+        git add -A
+        git commit -m "perf(${TARGET_ID}): dry-run attempt ${CURRENT_ATTEMPT} — pipeline test [${LOOP_RUN_ID}]" || true
+        git push origin "$BRANCH_NAME"
+        cd "$REPO_ROOT"
+
+        break  # exit attempt loop, go to decision wait
+    fi
 
     # Check: >= 5% improvement AND no regressions
     IMPROVED=0

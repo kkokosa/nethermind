@@ -52,6 +52,7 @@ WORKERS_ONLY=false
 SINGLE_WORKER=false
 BUILD_UI=false
 RESEARCHER=false
+DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -64,8 +65,9 @@ while [[ $# -gt 0 ]]; do
         --workers-only)  WORKERS_ONLY=true; shift ;;
         --build)         BUILD_UI=true; shift ;;
         --researcher)    RESEARCHER=true; shift ;;
+        --dry-run)       DRY_RUN=true; shift ;;
         -h|--help)
-            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only] [--build] [--researcher]"
+            echo "Usage: start.sh [--workers N] [--worker] [--target ID] [--exclude IDs] [--port N] [--server-only] [--workers-only] [--build] [--researcher] [--dry-run]"
             exit 0 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -174,6 +176,9 @@ if ! $SERVER_ONLY; then
         fi
         if [ -n "$EXCLUDE" ]; then
             WORKER_CMD="$WORKER_CMD --exclude $EXCLUDE"
+        fi
+        if $DRY_RUN; then
+            WORKER_CMD="$WORKER_CMD --dry-run"
         fi
 
         tmux new-session -d -s "$SESSION_NAME" -c "$REPO_ROOT" \
