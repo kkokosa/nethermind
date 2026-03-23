@@ -117,32 +117,80 @@ bash tools/perf-agents/cleanup.sh --force
 - **Claude Code integration**: tmux has native support in Claude Code agent teams.
 - **Hot add/remove**: add workers to a running system without restarting anything.
 
+## Role-Based Permissions
+
+Each agent role gets a tailored `.claude/settings.json` with only the permissions
+it needs. Settings files live in `tools/perf-agents/settings/` and are installed
+into the worktree (or repo root for researcher) before each Claude Code session.
+
+### Permission Matrix
+
+| Capability | Researcher | Worker-Research | Worker-Implement |
+|-----------|-----------|-----------------|------------------|
+| Read/Glob/Grep/Agent | Yes | Yes | Yes |
+| Write | No | Yes (loop-state only) | Yes |
+| Edit | No | No | Yes |
+| WebSearch/WebFetch | Yes | Yes | No |
+| dotnet build/test/run | No | No | Yes |
+| git (mutating) | No | No | Yes |
+| git (read-only) | Yes | Yes | Yes |
+| File mutation (mkdir/cp/rm) | No | No | Yes |
+| MCP: backlog_status | Yes | Yes | No |
+| MCP: propose_targets | Yes | Yes | No |
+| MCP: ingest_benchmarks | No | No | Yes |
+| MCP: compare_results | No | No | Yes |
+| MCP: run_correctness_check | No | No | Yes |
+
+### Settings files
+
+- `settings/researcher.json` — read-only research, web access, backlog tools
+- `settings/worker-research.json` — like researcher but can Write to loop-state/
+- `settings/worker-implement.json` — full build/edit/test, no web access
+
+### How settings are installed
+
+**Workers** (`worker.sh`):
+- Before research phase: `install_role_settings "worker-research"` → copies to `$WORKTREE_DIR/.claude/settings.json`
+- Before implement phase: `install_role_settings "worker-implement"` → overwrites with implement permissions
+- Placeholders (`__MCP_SERVER_PATH__`, `__PERF_DB_PATH__`, `__PERF_REPO_ROOT__`) are resolved via `sed`
+
+**Researcher** (`researcher.sh`):
+- On startup: installs `settings/researcher.json` to `$REPO_ROOT/.claude/settings.json`
+- On exit (trap): removes the settings file
+
+## MCP Tools
+
+A FastMCP server (`mcp-server.py`) exposes role-specific tools that wrap existing
+scripts. The server accepts `--role` to filter which tools are available.
+
+### Research tools (researcher, worker-research)
+
+| Tool | Wraps | Description |
+|------|-------|-------------|
+| `backlog_status` | `backlog.py status --json` | Query current target backlog |
+| `propose_targets` | `propose_target.py --from-file` | Submit new target proposals |
+
+### Implement tools (worker-implement)
+
+| Tool | Wraps | Description |
+|------|-------|-------------|
+| `ingest_benchmarks` | `ingest.py` | Store BDN JSON results in SQLite |
+| `compare_results` | `compare.py` | Compute baseline vs candidate deltas |
+| `run_correctness_check` | `run-correctness-check.sh` | Run area-specific unit tests |
+
+### Configuration
+
+The MCP server is configured in each settings JSON under `mcpServers.perf-tools`.
+Environment variables `PERF_DB_PATH` and `PERF_REPO_ROOT` are passed through to
+the server process.
+
 ## Bubblewrap Sandboxing
 
-Workers are sandboxed via `.claude/settings.json` (checked into repo):
+All roles use bubblewrap sandboxing via `.claude/settings.json`:
 
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false,
-    "filesystem": {
-      "allowWrite": [".", "//tmp/perf-agents"],
-      "denyWrite": ["//etc", "//usr/bin", "//usr/local/bin"],
-      "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"]
-    },
-    "network": {
-      "allowedDomains": ["github.com", "api.github.com", "*.nuget.org", "api.anthropic.com"]
-    }
-  }
-}
-```
-
-**Key properties:**
-- `allowWrite: ["."]` — workers can only write within the project directory (their worktree)
-- `denyRead` — sensitive directories are inaccessible
-- `allowedDomains` — network restricted to GitHub, NuGet, and Anthropic API
+- `allowWrite` — scoped per role (researcher: `/tmp` only; worker-research: `./loop-state` + `/tmp`; worker-implement: `.` + `/tmp`)
+- `denyRead` — sensitive directories (`.ssh`, `.aws`, `.gnupg`, `.claude`) blocked for all roles
+- `allowedDomains` — network restricted to GitHub, NuGet, Anthropic API (+ docs.rs for research roles)
 - `autoAllowBashIfSandboxed` — bash commands run without interactive prompts inside sandbox
 
 **Prerequisites:**
@@ -399,6 +447,11 @@ tools/perf-agents/
 ├── worker.sh                   # Generic worker (claims target, runs loop)
 ├── claim_target.py             # Atomic target claim from SQLite
 ├── decision-server.py          # HTTP server (dashboard + API + decision)
+├── mcp-server.py               # FastMCP server exposing role-specific tools
+├── settings/                   # Role-specific .claude/settings.json templates
+│   ├── researcher.json         # Read-only research + web + backlog MCP tools
+│   ├── worker-research.json    # Research + Write(loop-state) + backlog MCP tools
+│   └── worker-implement.json   # Full build/edit/test + implement MCP tools
 ├── run-correctness-check.sh    # Layer 1: targeted unit tests per area
 ├── run-block-benchmark.sh      # Layer 2: BlockProcessingBenchmark wrapper
 ├── setup-expb.sh               # Layer 3: one-time EXPB setup

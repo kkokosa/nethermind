@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "Read", "Write", "Edit", "Glob", "Grep", "Agent", "ToolSearch",
+      "TaskOutput",
+      "Bash(dotnet:*)", "Bash(git:*)", "Bash(sqlite3:*)",
+      "Bash(python3:*)", "Bash(bash:*)", "Bash(ls:*)", "Bash(cat:*)",
+      "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
+      "Bash(find:*)", "Bash(grep:*)", "Bash(rg:*)",
+      "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
+      "Bash(diff:*)", "Bash(envsubst:*)", "Bash(chmod:*)",
+      "mcp__perf-tools__ingest_benchmarks",
+      "mcp__perf-tools__compare_results",
+      "mcp__perf-tools__run_correctness_check"
+    ],
+    "deny": [
+      "WebFetch", "WebSearch"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "allowWrite": [".", "/tmp/perf-agents"],
+      "denyWrite": ["/etc", "/usr/bin", "/usr/local/bin"],
+      "denyRead": ["/home/*/.ssh", "/home/*/.aws", "/home/*/.gnupg", "/home/*/.claude"]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com", "api.github.com",
+        "nuget.org", "api.nuget.org",
+        "api.anthropic.com"
+      ]
+    }
+  },
+  "mcpServers": {
+    "perf-tools": {
+      "command": "python3",
+      "args": ["__MCP_SERVER_PATH__", "--role", "worker-implement"],
+      "env": {
+        "PERF_DB_PATH": "__PERF_DB_PATH__",
+        "PERF_REPO_ROOT": "__PERF_REPO_ROOT__"
+      }
+    }
+  }
+}

@@ -130,6 +130,14 @@ Rules:
 - Maximum 3 proposals per research session
 - This is optional — do not force it
 
+## Available MCP Tools
+
+You have access to these tools via the `perf-tools` MCP server:
+- **`backlog_status`** — Query the current optimization backlog (target counts, priorities)
+- **`propose_targets`** — Submit new target proposals (alternative to writing new-targets.json)
+
+Use `backlog_status` to check what targets exist before proposing new ones.
+
 ## Constraints
 
 - DO NOT write implementation code. Research only.

@@ -38,6 +38,14 @@ Write `${RESEARCH_OUTPUT_DIR}/new-targets.json`:
 ]
 ```
 
+## Available MCP Tools
+
+You have access to these tools via the `perf-tools` MCP server:
+- **`backlog_status`** — Query the current optimization backlog (use instead of raw sqlite3 queries)
+- **`propose_targets`** — Submit new target proposals directly (alternative to writing new-targets.json)
+
+Use `backlog_status` at the start of each cycle to get fresh backlog state.
+
 ## Constraints
 
 - Only propose with verified file:line references (you must READ the file first)

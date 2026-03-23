@@ -125,8 +125,15 @@ cp BenchmarkDotNet.Artifacts/results/*BlockProcessing*.json \
 
 ### 4.4 Ingest results into SQLite
 
+**Preferred: Use MCP tools** (available as `ingest_benchmarks`):
+
+- `ingest_benchmarks(loop_run_id="${LOOP_RUN_ID}", side="baseline", bdn_json_paths=["${LOOP_STATE_DIR}/baseline-results/*.json"])`
+- `ingest_benchmarks(loop_run_id="${LOOP_RUN_ID}", side="baseline", bdn_json_paths=["${LOOP_STATE_DIR}/baseline-bp-results/*.json"])`
+- `ingest_benchmarks(loop_run_id="${LOOP_RUN_ID}", side="candidate", bdn_json_paths=["${LOOP_STATE_DIR}/candidate-results/*.json"])`
+- `ingest_benchmarks(loop_run_id="${LOOP_RUN_ID}", side="candidate", bdn_json_paths=["${LOOP_STATE_DIR}/candidate-bp-results/*.json"])`
+
+Fallback (bash):
 ```bash
-# Ingest baseline (targeted + BP)
 python tools/perf-dashboard/scripts/ingest.py \
   --loop-run ${LOOP_RUN_ID} --side baseline \
   --bdn-json "${LOOP_STATE_DIR}/baseline-results/"*.json
@@ -135,7 +142,6 @@ python tools/perf-dashboard/scripts/ingest.py \
   --loop-run ${LOOP_RUN_ID} --side baseline \
   --bdn-json "${LOOP_STATE_DIR}/baseline-bp-results/"*.json
 
-# Ingest candidate (targeted + BP)
 python tools/perf-dashboard/scripts/ingest.py \
   --loop-run ${LOOP_RUN_ID} --side candidate \
   --bdn-json "${LOOP_STATE_DIR}/candidate-results/"*.json
@@ -149,6 +155,9 @@ python tools/perf-dashboard/scripts/ingest.py \
 
 ### 5.1 Run comparison
 
+**Preferred: Use MCP tool** `compare_results(loop_run_id="${LOOP_RUN_ID}")`.
+
+Fallback (bash):
 ```bash
 python tools/perf-dashboard/scripts/compare.py --loop-run ${LOOP_RUN_ID}
 ```
@@ -209,7 +218,8 @@ git commit -m "perf(${TARGET_ID}): attempt ${ATTEMPT_NUMBER} — [result summary
 1. `dotnet build -c Release` — compiles
 2. `dotnet test` — existing tests pass
 3. `dotnet format whitespace` — formatted
-4. Correctness check — run `bash ../../tools/perf-agents/run-correctness-check.sh ${TARGET_ID}`.
+4. Correctness check — use MCP tool `run_correctness_check(target_id="${TARGET_ID}")`,
+   or fallback: `bash ../../tools/perf-agents/run-correctness-check.sh ${TARGET_ID}`.
    If it fails, stop and report in `measurement-report.md`.
 5. BenchmarkDotNet — both targeted micro-benchmark and BlockProcessingBenchmark
    on baseline and candidate complete

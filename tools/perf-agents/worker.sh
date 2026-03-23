@@ -33,6 +33,10 @@ if ! command -v "$PYTHON" &>/dev/null; then
     exit 1
 fi
 
+# Export env vars for MCP server and settings templates
+export PERF_DB_PATH="$REPO_ROOT/tools/perf-dashboard/db/perf.db"
+export PERF_REPO_ROOT="$REPO_ROOT"
+
 MAX_ATTEMPTS=3
 MAX_TURNS=50
 DECISION_POLL_INTERVAL=30
@@ -172,6 +176,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+install_role_settings() {
+    # Install role-specific .claude/settings.json into the worktree
+    # Usage: install_role_settings <role>
+    # Roles: worker-research, worker-implement
+    local role="$1"
+    local src="$SCRIPT_DIR/settings/${role}.json"
+    local dst="$WORKTREE_DIR/.claude/settings.json"
+    if [ ! -f "$src" ]; then
+        log "WARNING: Settings template not found: $src"
+        return 1
+    fi
+    mkdir -p "$WORKTREE_DIR/.claude"
+    # Replace placeholders with actual paths
+    sed -e "s|__MCP_SERVER_PATH__|$SCRIPT_DIR/mcp-server.py|g" \
+        -e "s|__PERF_DB_PATH__|$PERF_DB_PATH|g" \
+        -e "s|__PERF_REPO_ROOT__|$PERF_REPO_ROOT|g" \
+        "$src" > "$dst"
+    log "Installed $role settings → $dst"
+}
+
 acquire_benchmark_lock() {
     while [ -f "$BENCHMARK_LOCK" ]; do
         log "Benchmark lock held — waiting..."
@@ -270,46 +294,8 @@ if [ ! -f "$WORKTREE_DIR/src/tests/.git" ] && [ ! -d "$WORKTREE_DIR/src/tests/.g
     cd "$REPO_ROOT"
 fi
 
-# Create sandbox settings inside worktree (only affects Claude sessions here)
-mkdir -p "$WORKTREE_DIR/.claude"
-cat > "$WORKTREE_DIR/.claude/settings.json" << 'SANDBOX_EOF'
-{
-  "permissions": {
-    "allow": [
-      "Read", "Write", "Edit", "Glob", "Grep",
-      "Agent", "WebFetch", "WebSearch", "ToolSearch",
-      "TaskOutput", "TodoWrite",
-      "Bash(dotnet:*)", "Bash(git:*)", "Bash(sqlite3:*)",
-      "Bash(python3:*)", "Bash(bash:*)", "Bash(ls:*)", "Bash(cat:*)",
-      "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
-      "Bash(find:*)", "Bash(grep:*)", "Bash(rg:*)",
-      "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
-      "Bash(diff:*)", "Bash(envsubst:*)", "Bash(chmod:*)"
-    ],
-    "deny": []
-  },
-  "sandbox": {
-    "enabled": true,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false,
-    "filesystem": {
-      "allowWrite": [".", "/tmp/perf-agents"],
-      "denyWrite": ["/etc", "/usr/bin", "/usr/local/bin"],
-      "denyRead": ["/home/*/.ssh", "/home/*/.aws", "/home/*/.gnupg", "/home/*/.claude"]
-    },
-    "network": {
-      "allowedDomains": [
-        "github.com", "api.github.com",
-        "nuget.org", "api.nuget.org",
-        "api.anthropic.com",
-        "docs.rs",
-        "doc.rust-lang.org"
-      ]
-    }
-  }
-}
-SANDBOX_EOF
-log "Sandbox settings written to $WORKTREE_DIR/.claude/settings.json"
+# Install research-phase settings (will be swapped before implement phase)
+install_role_settings "worker-research"
 
 write_live_status "research" "Worktree created, starting research"
 
@@ -407,6 +393,9 @@ STUB_EOF
         )" 2>/dev/null || true
     else
         # ── Real mode: Claude Code + benchmarks ──
+        # Swap to implement-phase settings (full build/edit/test permissions, no web)
+        install_role_settings "worker-implement"
+
         # Benchmark lock: hold during entire implement session.
         # Claude Code will run benchmarks as part of this session.
         # The lock ensures no other worker benchmarks simultaneously.
