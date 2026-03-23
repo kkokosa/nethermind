@@ -1,0 +1,20 @@
+{
+  "agentStats": [
+    { "agent": "claude-code", "loops": 9, "improvements": 5, "regressions": 1, "neutral": 2, "inProgress": 1, "hitRate": 55.6, "avgCost": 0.66, "totalCost": 5.98, "avgTokens": 60500 },
+    { "agent": "gemini-code", "loops": 2, "improvements": 1, "regressions": 0, "neutral": 0, "inProgress": 1, "hitRate": 50.0, "avgCost": 0.19, "totalCost": 0.37, "avgTokens": 36050 }
+  ],
+  "areaEffectiveness": [
+    { "area": "EVM", "attempted": 4, "improved": 3, "hitRate": 75, "avgDelta": -15.9 },
+    { "area": "Trie", "attempted": 3, "improved": 2, "hitRate": 67, "avgDelta": -9.3 },
+    { "area": "State", "attempted": 2, "improved": 1, "hitRate": 50, "avgDelta": -8.3 },
+    { "area": "RLP", "attempted": 1, "improved": 0, "hitRate": 0, "avgDelta": 4.2 },
+    { "area": "DB", "attempted": 1, "improved": 0, "hitRate": 0, "avgDelta": -0.8 },
+    { "area": "Block Proc", "attempted": 1, "improved": 1, "hitRate": 100, "avgDelta": -22.1 }
+  ],
+  "failureTaxonomy": [
+    { "reason": "Below noise floor", "count": 2, "pct": 28.6 },
+    { "reason": "Regression detected", "count": 1, "pct": 14.3 },
+    { "reason": "Build/test failure", "count": 0, "pct": 0 },
+    { "reason": "Agent gave up", "count": 0, "pct": 0 }
+  ]
+}

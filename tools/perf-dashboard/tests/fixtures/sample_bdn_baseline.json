@@ -1,0 +1,53 @@
+{
+  "Title": "EvmStackBenchmarks",
+  "Benchmarks": [
+    {
+      "FullName": "Nethermind.Evm.Benchmark.EvmStackBenchmarks.Uint256",
+      "Statistics": {
+        "Mean": 245.3,
+        "Median": 243.1,
+        "StandardDeviation": 4.2,
+        "Min": 238.0,
+        "Max": 260.1,
+        "Percentiles": { "P95": 252.0 },
+        "N": 100
+      },
+      "Memory": {
+        "BytesAllocatedPerOperation": 72,
+        "Gen0Collections": 0.0012,
+        "Gen1Collections": 0,
+        "Gen2Collections": 0
+      }
+    },
+    {
+      "FullName": "Nethermind.Evm.Benchmark.EvmStackBenchmarks.PopAddress",
+      "Statistics": {
+        "Mean": 185.6,
+        "Median": 184.0,
+        "StandardDeviation": 3.1,
+        "Min": 180.2,
+        "Max": 195.0,
+        "Percentiles": { "P95": 190.5 },
+        "N": 100
+      },
+      "Memory": {
+        "BytesAllocatedPerOperation": 32,
+        "Gen0Collections": 0.0008,
+        "Gen1Collections": 0,
+        "Gen2Collections": 0
+      }
+    },
+    {
+      "FullName": "Nethermind.Evm.Benchmark.EvmStackBenchmarks.Pop(count: 10)",
+      "Statistics": {
+        "Mean": 120.4,
+        "Median": 119.8,
+        "StandardDeviation": 2.5,
+        "Min": 116.0,
+        "Max": 128.3,
+        "Percentiles": { "P95": 124.0 },
+        "N": 100
+      }
+    }
+  ]
+}
