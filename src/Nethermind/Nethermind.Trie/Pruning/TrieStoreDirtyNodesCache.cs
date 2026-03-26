@@ -218,26 +218,16 @@ internal class TrieStoreDirtyNodesCache
     public void IncrementMemory(TrieNode node)
     {
         long memoryUsage = node.GetMemorySize(false) + KeyMemoryUsage;
-        Interlocked.Increment(ref _count);
-        Interlocked.Add(ref _totalMemory, memoryUsage);
-        if (!node.IsPersisted)
-        {
-            Interlocked.Increment(ref _dirtyCount);
-            Interlocked.Add(ref _totalDirtyMemory, memoryUsage);
-        }
+        // Shard-level counters are intentionally NOT updated here to avoid
+        // 4 Interlocked (full memory barrier) operations per node insertion.
+        // They are recomputed from scratch during PruneCache and only read
+        // by RecalculateTotalMemoryUsage immediately after pruning.
         _trieStore.IncrementMemoryUsedByDirtyCache(memoryUsage, node.IsPersisted);
     }
 
     private void DecrementMemory(TrieNode node)
     {
         long memoryUsage = node.GetMemorySize(false) + KeyMemoryUsage;
-        Interlocked.Decrement(ref _count);
-        Interlocked.Add(ref _totalMemory, -memoryUsage);
-        if (!node.IsPersisted)
-        {
-            Interlocked.Decrement(ref _dirtyCount);
-            Interlocked.Add(ref _totalDirtyMemory, -memoryUsage);
-        }
         _trieStore.DecreaseMemoryUsedByDirtyCache(memoryUsage, node.IsPersisted);
     }
 
@@ -461,7 +451,10 @@ internal class TrieStoreDirtyNodesCache
     {
         _byHashObjectCache.NoResizeClear();
         _byKeyObjectCache.NoResizeClear();
-        Interlocked.Exchange(ref _count, 0);
+        _count = 0;
+        _dirtyCount = 0;
+        _totalMemory = 0;
+        _totalDirtyMemory = 0;
     }
 
     internal readonly struct Key : IEquatable<Key>

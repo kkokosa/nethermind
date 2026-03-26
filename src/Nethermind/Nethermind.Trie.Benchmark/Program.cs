@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
-using System;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Running;
 
@@ -14,12 +13,7 @@ namespace Nethermind.Trie.Benchmark
             => BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
                 .Run(args, new DebugInProcessConfig());
 #else
-        {
-            BenchmarkRunner.Run<TreeStoreBenchmark>();
-            // BenchmarkRunner.Run<CacheBenchmark>();
-            // BenchmarkRunner.Run<TrieNodeBenchmark>();
-            Console.ReadLine();
-        }
+            => BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 #endif
     }
 }

@@ -150,23 +150,26 @@ public sealed class TrieStore : ITrieStore, IPruningTrieStore
 
     public void IncrementMemoryUsedByDirtyCache(long nodeMemoryUsage, bool persisted)
     {
-        Metrics.CachedNodesCount = Interlocked.Increment(ref _totalCachedNodesCount);
-        Metrics.MemoryUsedByCache = Interlocked.Add(ref _memoryUsedByDirtyCache, nodeMemoryUsage);
+        // Metrics.* writes are decoupled from the hot path to avoid cache-line bouncing
+        // across cores that read the static Metrics fields. Metrics are updated during
+        // RecalculateTotalMemoryUsage (after pruning) and in the CachedNodesCount property.
+        Interlocked.Increment(ref _totalCachedNodesCount);
+        Interlocked.Add(ref _memoryUsedByDirtyCache, nodeMemoryUsage);
         if (!persisted)
         {
-            Metrics.DirtyNodesCount = Interlocked.Increment(ref _dirtyNodesCount);
-            Metrics.DirtyMemoryUsedByCache = Interlocked.Add(ref _dirtyMemoryUsedByDirtyCache, nodeMemoryUsage);
+            Interlocked.Increment(ref _dirtyNodesCount);
+            Interlocked.Add(ref _dirtyMemoryUsedByDirtyCache, nodeMemoryUsage);
         }
     }
 
     public void DecreaseMemoryUsedByDirtyCache(long nodeMemoryUsage, bool persisted)
     {
-        Metrics.CachedNodesCount = Interlocked.Decrement(ref _totalCachedNodesCount);
-        Metrics.MemoryUsedByCache = Interlocked.Add(ref _memoryUsedByDirtyCache, -nodeMemoryUsage);
+        Interlocked.Decrement(ref _totalCachedNodesCount);
+        Interlocked.Add(ref _memoryUsedByDirtyCache, -nodeMemoryUsage);
         if (!persisted)
         {
-            Metrics.DirtyNodesCount = Interlocked.Decrement(ref _dirtyNodesCount);
-            Metrics.DirtyMemoryUsedByCache = Interlocked.Add(ref _dirtyMemoryUsedByDirtyCache, -nodeMemoryUsage);
+            Interlocked.Decrement(ref _dirtyNodesCount);
+            Interlocked.Add(ref _dirtyMemoryUsedByDirtyCache, -nodeMemoryUsage);
         }
     }
 
@@ -264,25 +267,12 @@ public sealed class TrieStore : ITrieStore, IPruningTrieStore
 
     private TrieStoreDirtyNodesCache GetDirtyNodeShard(in TrieStoreDirtyNodesCache.Key key) => _dirtyNodes[GetNodeShardIdx(key.Path, key.Keccak)];
 
-    private long NodesCount()
-    {
-        long count = 0;
-        foreach (TrieStoreDirtyNodesCache dirtyNode in _dirtyNodes)
-        {
-            count += dirtyNode.Count;
-        }
-        return count;
-    }
+    // Shard-level counters are no longer maintained per-insertion. Use global counters
+    // which are kept accurate by IncrementMemoryUsedByDirtyCache/DecreaseMemoryUsedByDirtyCache
+    // and recalibrated after each prune cycle by RecalculateTotalMemoryUsage.
+    private long NodesCount() => Interlocked.Read(ref _totalCachedNodesCount);
 
-    private long DirtyNodesCount()
-    {
-        long count = 0;
-        foreach (TrieStoreDirtyNodesCache dirtyNode in _dirtyNodes)
-        {
-            count += dirtyNode.DirtyCount;
-        }
-        return count;
-    }
+    private long DirtyNodesCount() => Interlocked.Read(ref _dirtyNodesCount);
 
     private bool DirtyNodesTryGetValue(in TrieStoreDirtyNodesCache.Key key, out TrieNode? node) =>
         GetDirtyNodeShard(key).TryGetValue(key, out node);
