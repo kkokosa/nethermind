@@ -2,10 +2,17 @@
 
     <PropertyGroup>
       <OutputType>Exe</OutputType>
+      <GenerateTestingPlatformEntryPoint>false</GenerateTestingPlatformEntryPoint>
     </PropertyGroup>
 
     <ItemGroup>
       <PackageReference Include="BenchmarkDotNet" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <!-- Pre-existing broken benchmark using removed APIs (IKeyValueStore, old TrieStore ctor) -->
+      <Compile Remove="TreeCommitterBenchmark.cs" />
+      <Compile Remove="TrieNodeBenchmark.cs" />
     </ItemGroup>
 
     <ItemGroup>

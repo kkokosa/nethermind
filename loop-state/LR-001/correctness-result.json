@@ -1,0 +1,11 @@
+{
+  "target_id": "TRIE-5",
+  "area_prefix": "TRIE",
+  "passed": 0,
+  "failed": 1,
+  "total": 1,
+  "duration_s": 0,
+  "failed_projects": ["src/Nethermind/Nethermind.Trie.Test/Nethermind.Trie.Test.csproj"],
+  "result": "fail",
+  "timestamp": "2026-03-26T08:32:51Z"
+}
